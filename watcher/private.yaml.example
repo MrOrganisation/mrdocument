@@ -1,0 +1,90 @@
+# private.yaml - Private/Personal Context Configuration
+#
+# This file defines the "private" context for personal documents.
+# Place in your user folder: /sync/alice/private.yaml
+
+name: private
+description: Personal documents including bills, insurance, medical records, and household correspondence
+
+# Use context field in filename for easy identification
+filename: "{date}-{type}-{topic}-{sender}"
+
+# ==============================================================================
+# Fields Configuration
+# ==============================================================================
+
+fields:
+  # ==============================================================================
+  # Type Field - Strict Mode
+  # ==============================================================================
+  # Using allow_new_candidates: false forces AI to choose from this exact list.
+  # The enum constraint is enforced via JSON schema in the API call.
+  type:
+    instructions: |
+      Identify the document type or class.
+    candidates:
+      - "Bill"
+      - "Receipt"
+      - "Statement"
+      - "Letter"
+      - "Policy"
+      - "Invoice"
+      - "Notice"
+      - "Certificate"
+    blacklist:
+      - "Unknown"
+    allow_new_candidates: false  # STRICT: AI must choose from candidates
+
+  # ==============================================================================
+  # Sender Field - Flexible Mode
+  # ==============================================================================
+  sender:
+    instructions: |
+      Use the company or organization name.
+      For government agencies, use the official department name.
+    candidates:
+      - "Electric Company"
+      - "Water Utility"
+      - "Insurance Co"
+      - "Bank"
+      - "Tax Office"
+    allow_new_candidates: true  # New senders will be added automatically
+
+  # ==============================================================================
+  # Topic Field - Strict Categories
+  # ==============================================================================
+  topic:
+    instructions: |
+      Categorize the document into one of the available service categories.
+      Choose the most specific category that applies.
+    candidates:
+      - "Utilities"
+      - "Insurance"
+      - "Banking"
+      - "Medical"
+      - "Taxes"
+      - "Housing"
+      - "Vehicle"
+      - "Subscriptions"
+    blacklist:
+      - "Personal"
+      - "Other"
+      - "Miscellaneous"
+    allow_new_candidates: false  # Force categorization into predefined topics
+
+  # ==============================================================================
+  # Subject Field
+  # ==============================================================================
+  subject:
+    instructions: |
+      Provide a brief subject or title describing what this specific document is about.
+    # No candidates - free-form field
+
+  # ==============================================================================
+  # Keywords Field
+  # ==============================================================================
+  keywords:
+    instructions: |
+      Include account numbers, policy numbers, amounts, and due dates.
+      Focus on details useful for future reference and searching.
+    # No candidates - free-form field

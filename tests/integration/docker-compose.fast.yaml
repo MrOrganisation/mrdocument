@@ -1,0 +1,94 @@
+services:
+  mock-anthropic:
+    build:
+      context: ../../..
+      dockerfile: mrdocument/tests/integration/Dockerfile.mock-anthropic
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mock-stt:
+    build:
+      context: ../../..
+      dockerfile: mrdocument/tests/integration/Dockerfile.mock-stt
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      start_period: 15s
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  mock-ocr:
+    build:
+      context: ../../..
+      dockerfile: mrdocument/tests/integration/Dockerfile.mock-ocr
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mrdocument-db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: mrdocument
+      POSTGRES_USER: mrdocument
+      POSTGRES_PASSWORD: mrdocument
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mrdocument"]
+      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  mrdocument-service:
+    build:
+      context: ../../..
+      dockerfile: mrdocument/Dockerfile.service
+    environment:
+      OCR_URL: http://mock-ocr:5000
+      ANTHROPIC_BASE_URL: http://mock-anthropic:8080
+      ANTHROPIC_API_KEY: mock-key
+      HOST: 0.0.0.0
+      PORT: 8000
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - ./costs:/costs
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8000/health"]
+      start_period: 15s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      mock-anthropic:
+        condition: service_healthy
+      mock-ocr:
+        condition: service_healthy
+
+  mrdocument-watcher:
+    build:
+      context: ../../..
+      dockerfile: mrdocument/Dockerfile.watcher
+    environment:
+      MRDOCUMENT_URL: http://mrdocument-service:8000
+      STT_URL: http://mock-stt:8000
+      DATABASE_URL: postgresql://mrdocument:mrdocument@mrdocument-db:5432/mrdocument
+      OCR_LANGUAGE: deu+eng
+      HEALTH_PORT: 8080
+      WATCHER_CONFIG: /app/watcher.yaml
+    volumes:
+      - ./testdata:/sync/testuser
+      - ./watcher-fast.yaml:/app/watcher.yaml:ro
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      mrdocument-service:
+        condition: service_healthy
+      mock-stt:
+        condition: service_healthy
+      mrdocument-db:
+        condition: service_healthy

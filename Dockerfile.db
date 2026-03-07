@@ -1,0 +1,13 @@
+FROM postgres:17
+
+RUN set -eux; \
+    # Remove any existing user/group with ID 1000 to avoid conflicts
+    existing_user=$(getent passwd 1000 | cut -d: -f1 || true); \
+    existing_group=$(getent group 1000 | cut -d: -f1 || true); \
+    if [ -n "$existing_user" ] && [ "$existing_user" != "postgres" ]; then userdel "$existing_user"; fi; \
+    if [ -n "$existing_group" ] && [ "$existing_group" != "postgres" ]; then groupdel "$existing_group"; fi; \
+    # Change postgres user/group IDs to 1000
+    groupmod -g 1000 postgres; \
+    usermod -u 1000 -g 1000 postgres; \
+    # Fix ownership of postgres directories
+    chown -R postgres:postgres /var/lib/postgresql /var/run/postgresql

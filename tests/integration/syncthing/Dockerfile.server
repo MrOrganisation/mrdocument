@@ -1,0 +1,6 @@
+FROM syncthing/syncthing:latest
+COPY server/config.xml /var/syncthing/config/config.xml
+COPY server/cert.pem /var/syncthing/config/cert.pem
+COPY server/key.pem /var/syncthing/config/key.pem
+RUN chown -R 1000:1000 /var/syncthing/config && mkdir -p /var/syncthing/testuser && chown 1000:1000 /var/syncthing/testuser
+ENV STNOUPGRADE=1 STNODEFAULTFOLDER=1

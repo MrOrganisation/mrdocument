@@ -1,0 +1,38 @@
+FROM jbarlow83/ocrmypdf:latest
+
+USER root
+
+# Install additional dependencies for better OCR and format support
+RUN apt-get update && apt-get install -y \
+    tesseract-ocr-deu \
+    tesseract-ocr-fra \
+    tesseract-ocr-spa \
+    tesseract-ocr-ita \
+    tesseract-ocr-por \
+    python3-pip \
+    curl \
+    poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Flask for API using system Python
+RUN pip3 install --no-cache-dir --break-system-packages flask werkzeug gunicorn
+
+# Create directories for input and output
+RUN mkdir -p /input /output /app && \
+    chmod 777 /input /output
+
+# Copy API server
+COPY ocrmypdf/api.py /app/api.py
+
+WORKDIR /app
+
+# Expose port for API
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:5000/health || exit 1
+
+# Override entrypoint and run gunicorn server
+ENTRYPOINT []
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--timeout", "300", "api:app"]

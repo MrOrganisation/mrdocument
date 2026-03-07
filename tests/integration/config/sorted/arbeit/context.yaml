@@ -1,0 +1,30 @@
+name: arbeit
+description: Geschaeftliche Dokumente wie Rechnungen, Vertraege und Angebote von Geschaeftspartnern
+
+filename: "{context}-{type}-{date}-{sender}"
+audio_filename: "{context}-{date}-{sender}-{type}"
+
+fields:
+  type:
+    instructions: "Bestimme den Dokumenttyp anhand des Inhalts. Nur die angegebenen Kandidaten sind erlaubt."
+    candidates:
+      - "Rechnung"
+      - "Vertrag"
+      - "Angebot"
+    allow_new_candidates: false
+
+  sender:
+    instructions: "Bestimme den Absender oder die Organisation, die das Dokument erstellt hat."
+    candidates:
+      - "Schulze GmbH"
+      - "Fischer AG"
+      - "Keller und Partner"
+    allow_new_candidates: false
+
+filename_keywords:
+  - "schulze"
+  - "keller"
+
+folders:
+  - "context"
+  - "sender"

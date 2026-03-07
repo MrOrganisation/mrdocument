@@ -1,0 +1,198 @@
+networks:
+  mrdocument-net:
+    driver: bridge
+
+services:
+  ocrmypdf:
+    build:
+      context: .
+      dockerfile: Dockerfile.ocrmypdf
+    image: ocrmypdf:latest-custom
+    container_name: ocrmypdf
+    restart: unless-stopped
+    environment:
+      LOG_DIR: /var/log/ocrmypdf
+    networks:
+      - mrdocument-net
+    volumes:
+      - ~/data/ocrmypdf/input:/input
+      - ~/data/ocrmypdf/output:/output
+      - ~/log/ocrmypdf:/var/log/ocrmypdf
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  anthropic-adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.anthropic-adapter
+    image: anthropic-adapter:latest-custom
+    container_name: anthropic-adapter
+    restart: unless-stopped
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+    networks:
+      - mrdocument-net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "-O", "/dev/null", "http://127.0.0.1:2019/config/"]
+      start_period: 5s
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  mrdocument-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+    image: mrdocument-service:latest-custom
+    container_name: mrdocument-service
+    restart: unless-stopped
+    environment:
+      OCR_URL: http://ocrmypdf:5000
+      ANTHROPIC_BASE_URL: http://anthropic-adapter:8080
+      ANTHROPIC_API_KEY: dummy
+      HOST: 0.0.0.0
+      PORT: 8000
+      LOG_DIR: /var/log/mrdocument-service
+    networks:
+      - mrdocument-net
+    ports:
+      - "127.0.0.1:8001:8000"
+    volumes:
+      - ~/data/syncthing/costs:/costs
+      - ~/log/mrdocument-service:/var/log/mrdocument-service
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      start_period: 30s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      ocrmypdf:
+        condition: service_healthy
+      anthropic-adapter:
+        condition: service_healthy
+
+  stt:
+    build:
+      context: .
+      dockerfile: Dockerfile.stt
+    image: stt:latest-custom
+    container_name: stt
+    restart: unless-stopped
+    environment:
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY}
+      ANTHROPIC_BASE_URL: http://anthropic-adapter:8080
+      ANTHROPIC_API_KEY: dummy
+      LOG_DIR: /var/log/stt
+    networks:
+      - mrdocument-net
+    ports:
+      - "127.0.0.1:8002:8000"
+    volumes:
+      - ~/log/stt:/var/log/stt
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      start_period: 30s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      anthropic-adapter:
+        condition: service_healthy
+
+  syncthing:
+    image: syncthing/syncthing:latest
+    container_name: syncthing
+    restart: unless-stopped
+    environment:
+      PUID: 1000
+      PGID: 1000
+      STLOGFILE: /var/log/syncthing/syncthing.log
+    networks:
+      - mrdocument-net
+    ports:
+      - "22000:22000"
+      - "22000:22000/udp"
+    volumes:
+      - ~/data/syncthing:/var/syncthing
+      - ~/data/syncthing/sync:/sync
+      - ~/log/syncthing:/var/log/syncthing
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.syncthing.entrypoints=websecure"
+      - "traefik.http.routers.syncthing.rule=Host(`parmenides.net`) && PathPrefix(`/syncthing`)"
+      - "traefik.http.routers.syncthing.tls=true"
+      - "traefik.http.routers.syncthing.middlewares=strip-syncthing@file"
+      - "traefik.http.services.syncthing.loadbalancer.server.port=8384"
+      - "traefik.docker.network=mrdocument-net"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8384/rest/noauth/health"]
+      start_period: 30s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  mrdocument-db:
+    build:
+      context: .
+      dockerfile: Dockerfile.db
+    image: mrdocument-db:latest-custom
+    container_name: mrdocument-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: mrdocument
+      POSTGRES_USER: mrdocument
+      POSTGRES_PASSWORD: ${MRDOCUMENT_DB_PASSWORD}
+    networks:
+      - mrdocument-net
+    volumes:
+      - ~/data/mrdocument-db:/var/lib/postgresql/data
+      - ~/log/mrdocument-db:/var/log/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mrdocument"]
+      start_period: 10s
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mrdocument-watcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.watcher
+    image: mrdocument-watcher:latest-custom
+    container_name: mrdocument-watcher
+    restart: unless-stopped
+    environment:
+      MRDOCUMENT_URL: http://mrdocument-service:8000
+      STT_URL: http://stt:8000
+      OCR_LANGUAGE: deu+eng
+      HEALTH_PORT: 8080
+      LOG_LEVEL: INFO
+      LOG_DIR: /var/log/mrdocument-watcher
+      DATABASE_URL: postgresql://mrdocument:${MRDOCUMENT_DB_PASSWORD}@mrdocument-db:5432/mrdocument
+      PUID: 1000
+      PGID: 1000
+    networks:
+      - mrdocument-net
+    volumes:
+      - ~/data/syncthing/sync:/sync
+      - ~/data/syncthing/costs:/costs
+      - ~/data/syncthing/watcher.yaml:/app/watcher.yaml:ro
+      - ~/log/mrdocument-watcher:/var/log/mrdocument-watcher
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      start_period: 60s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      mrdocument-service:
+        condition: service_healthy
+      stt:
+        condition: service_healthy
+      mrdocument-db:
+        condition: service_healthy

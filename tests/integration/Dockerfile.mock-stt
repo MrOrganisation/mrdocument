@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir flask gunicorn
+COPY mrdocument/tests/integration/mock_stt.py /app/mock_stt.py
+WORKDIR /app
+EXPOSE 8000
+CMD ["gunicorn", "--bind", "0.0.0.0:8000", "--workers", "1", "--timeout", "60", "mock_stt:app"]

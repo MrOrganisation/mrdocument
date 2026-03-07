@@ -1,0 +1,33 @@
+<configuration version="37">
+    <folder id="mrdocument-testuser" label="MrDocument Test User"
+            path="/var/syncthing/testuser" type="sendreceive"
+            rescanIntervalS="3600" fsWatcherEnabled="true" fsWatcherDelayS="1"
+            ignorePerms="true" autoNormalize="true">
+        <device id="V2PEPR3-NHDEFD2-IYAQQCT-U2HK53O-5IUE7RK-WZYA7PG-32RSXLF-TNC3RQC" introducedBy=""></device>
+        <device id="DJBWTL4-EZ2RDUX-RWPSG2D-SHOTIJ4-FR3NBCM-VRGNDBW-5IFJVK2-EDJ7VAS" introducedBy=""></device>
+        <minDiskFree unit="%">1</minDiskFree>
+    </folder>
+
+    <device id="V2PEPR3-NHDEFD2-IYAQQCT-U2HK53O-5IUE7RK-WZYA7PG-32RSXLF-TNC3RQC" name="syncthing-server" compression="metadata">
+        <address>dynamic</address>
+    </device>
+    <device id="DJBWTL4-EZ2RDUX-RWPSG2D-SHOTIJ4-FR3NBCM-VRGNDBW-5IFJVK2-EDJ7VAS" name="syncthing-client" compression="metadata">
+        <address>tcp://syncthing-client:22000</address>
+    </device>
+
+    <gui enabled="true" tls="false" debugging="false">
+        <address>0.0.0.0:8384</address>
+        <apikey>test-api-key-syncthing</apikey>
+    </gui>
+
+    <options>
+        <listenAddress>tcp://0.0.0.0:22000</listenAddress>
+        <globalAnnounceEnabled>false</globalAnnounceEnabled>
+        <localAnnounceEnabled>false</localAnnounceEnabled>
+        <relaysEnabled>false</relaysEnabled>
+        <natEnabled>false</natEnabled>
+        <urAccepted>-1</urAccepted>
+        <crashReportingEnabled>false</crashReportingEnabled>
+        <startBrowser>false</startBrowser>
+    </options>
+</configuration>

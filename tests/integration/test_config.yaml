@@ -1,0 +1,11 @@
+# Integration test configuration
+#
+# sync_folder: Root of the test user's data directory.
+#              For local Docker testing, use "./testdata" (relative to integration dir).
+#              For remote Syncthing testing, use "~/Sync/testuser".
+
+sync_folder: "./testdata"
+
+# Polling settings
+poll_interval: 0.5      # seconds between checks
+max_timeout: 180        # maximum seconds to wait for a file to appear

@@ -1,0 +1,5 @@
+smart_folders:
+  rechnungen:
+    condition:
+      field: "type"
+      value: "Rechnung"

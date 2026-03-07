@@ -1,0 +1,10 @@
+enabled: true
+incoming_folder: "incoming"
+processed_folder: "processed"
+archive_folder: "archive"
+error_folder: "error"
+transit_folder: "transit"
+reviewed_folder: "reviewed"
+sorted_folder: "sorted"
+duplicates_folder: "duplicates"
+primary_language: "German"

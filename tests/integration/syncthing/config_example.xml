@@ -1,0 +1,36 @@
+<!--
+  Example Syncthing configuration snippet for the MrDocument integration test client.
+
+  Place this in ~/.config/syncthing/config.xml (or merge the relevant parts
+  into your existing config).
+
+  Replace:
+    - REMOTE_DEVICE_ID  with the device ID of the MrDocument server
+    - /home/youruser/Sync/testuser  with your local sync path
+    - Folder ID "mrdocument-testuser" must match the server-side folder ID
+-->
+<configuration version="37">
+    <folder id="mrdocument-testuser" label="MrDocument Test User" path="/home/youruser/Sync/testuser"
+            type="sendreceive" rescanIntervalS="10" fsWatcherEnabled="true" fsWatcherDelayS="1"
+            ignorePerms="false" autoNormalize="true">
+        <device id="REMOTE_DEVICE_ID" introducedBy="">
+            <encryptionPassword></encryptionPassword>
+        </device>
+        <minDiskFree unit="%">1</minDiskFree>
+        <versioning>
+            <cleanupIntervalS>3600</cleanupIntervalS>
+        </versioning>
+        <order>random</order>
+        <ignoreDelete>false</ignoreDelete>
+        <scanProgressIntervalS>0</scanProgressIntervalS>
+        <maxConflicts>10</maxConflicts>
+    </folder>
+
+    <device id="REMOTE_DEVICE_ID" name="mrdocument-server" compression="metadata"
+            introducer="false" skipIntroductionRemovals="false" paused="false"
+            allowedNetworks="" autoAcceptFolders="false" maxSendKbps="0"
+            maxRecvKbps="0" maxRequestKiB="0" untrusted="false"
+            remoteGUIPort="0" numConnections="0">
+        <address>dynamic</address>
+    </device>
+</configuration>

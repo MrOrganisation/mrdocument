@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir flask gunicorn
+COPY mrdocument/tests/integration/mock_anthropic.py /app/mock_anthropic.py
+WORKDIR /app
+EXPOSE 8080
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "--timeout", "30", "mock_anthropic:app"]

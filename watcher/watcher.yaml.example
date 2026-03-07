@@ -1,0 +1,54 @@
+# Syncthing Watcher Configuration
+#
+# This file configures which directories the watcher monitors for documents.
+# Place this file at ~/data/syncthing/watcher.yaml on the host.
+#
+# Each watch directory should contain:
+#   - sorted/{context}/context.yaml - Context configuration (at least one required)
+#   - config.yaml (optional) - User configuration (folders, filename pattern)
+#   - stt.yaml (optional) - Speech-to-text configuration for audio files
+#   - incoming/ - Drop files here for processing
+#   - processed/ - Processed results appear here
+#   - archive/ - Original files moved here after processing
+#   - error/ - Failed documents moved here
+#   - transit/ - Files currently being processed
+#   - duplicates/ - Duplicate PDFs moved here (auto-detected)
+
+# List of directories to watch
+# Each path should be a directory containing the user's document processing setup
+watch_directories:
+  # Example: Watch alice's mrdocument folder
+  # - /sync/alice/mrdocument
+  
+  # Example: Watch bob's documents folder
+  # - /sync/bob/documents
+  
+  # Example: Traditional setup (user root as watch dir)
+  # - /sync/alice
+  # - /sync/bob
+
+# You can also use glob patterns to match multiple directories
+# Patterns are expanded at startup and when checking for new folders
+#
+# Examples:
+#   /sync/*/mrdocument - Watch mrdocument folder for all users
+#   /sync/*/documents  - Watch documents folder for all users
+#   /sync/*            - Traditional: watch all user root folders
+watch_patterns:
+  - /sync/*/mrdocument
+
+# Note: If both watch_directories and watch_patterns are specified,
+# all matching directories will be watched.
+# If neither is specified, defaults to /sync/* (all user folders)
+
+# =============================================================================
+# Processing Settings
+# =============================================================================
+
+# Timeout for document processing requests (seconds)
+# Default: 900 (15 minutes)
+timeout: 900
+
+# Maximum concurrent document processing requests
+# Default: 4
+max_concurrency: 4

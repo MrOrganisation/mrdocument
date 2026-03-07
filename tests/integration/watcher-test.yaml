@@ -1,0 +1,7 @@
+watch_patterns:
+  - "/sync/*"
+
+timeout: 900
+max_concurrency: 4
+debounce_seconds: 1
+full_scan_seconds: 5
