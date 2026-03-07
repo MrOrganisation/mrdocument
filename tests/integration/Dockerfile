@@ -20,18 +20,18 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ---------------------------------------------------------------------------
 
 # 1. Watcher dependencies
-COPY mrdocument/watcher/requirements.txt /tmp/watcher-requirements.txt
+COPY watcher/requirements.txt /tmp/watcher-requirements.txt
 RUN pip install --no-cache-dir -r /tmp/watcher-requirements.txt
 
 # 2. MrDocument service (Poetry)
 RUN pip install --no-cache-dir poetry
-COPY mrdocument/service/pyproject.toml mrdocument/service/poetry.lock /app/service/
+COPY service/pyproject.toml service/poetry.lock /app/service/
 RUN cd /app/service && \
     poetry config virtualenvs.create false && \
     poetry install --only main --no-interaction --no-ansi --no-root
 
 # 3. STT service
-COPY mrdocument/stt/ /app/stt/
+COPY stt/ /app/stt/
 RUN cd /app/stt && pip install --no-cache-dir -e .
 
 # 4. OCR API (Flask + Gunicorn)
@@ -42,39 +42,39 @@ RUN pip install --no-cache-dir flask gunicorn
 # ---------------------------------------------------------------------------
 
 # MrDocument service
-COPY mrdocument/service/mrdocument /app/service/mrdocument
+COPY service/mrdocument /app/service/mrdocument
 
 # Watcher
-COPY mrdocument/watcher/sorter.py /app/watcher/sorter.py
-COPY mrdocument/watcher/models.py /app/watcher/models.py
-COPY mrdocument/watcher/step1.py /app/watcher/step1.py
-COPY mrdocument/watcher/step2.py /app/watcher/step2.py
-COPY mrdocument/watcher/step3.py /app/watcher/step3.py
-COPY mrdocument/watcher/step4.py /app/watcher/step4.py
-COPY mrdocument/watcher/step5.py /app/watcher/step5.py
-COPY mrdocument/watcher/step6.py /app/watcher/step6.py
-COPY mrdocument/watcher/db_new.py /app/watcher/db_new.py
-COPY mrdocument/watcher/orchestrator.py /app/watcher/orchestrator.py
-COPY mrdocument/watcher/app.py /app/watcher/app.py
+COPY watcher/sorter.py /app/watcher/sorter.py
+COPY watcher/models.py /app/watcher/models.py
+COPY watcher/step1.py /app/watcher/step1.py
+COPY watcher/step2.py /app/watcher/step2.py
+COPY watcher/step3.py /app/watcher/step3.py
+COPY watcher/step4.py /app/watcher/step4.py
+COPY watcher/step5.py /app/watcher/step5.py
+COPY watcher/step6.py /app/watcher/step6.py
+COPY watcher/db_new.py /app/watcher/db_new.py
+COPY watcher/orchestrator.py /app/watcher/orchestrator.py
+COPY watcher/app.py /app/watcher/app.py
 
 # OCR API
-COPY mrdocument/ocrmypdf/api.py /app/ocrmypdf/api.py
+COPY ocrmypdf/api.py /app/ocrmypdf/api.py
 
 # Test config files
-COPY mrdocument/tests/integration/config/ /app/config/
+COPY tests/integration/config/ /app/config/
 
 # Supervisord config
-COPY mrdocument/tests/integration/supervisord.conf /etc/supervisord.conf
-COPY mrdocument/tests/integration/supervisord.service-mock.conf /etc/supervisord.service-mock.conf
+COPY tests/integration/supervisord.conf /etc/supervisord.conf
+COPY tests/integration/supervisord.service-mock.conf /etc/supervisord.service-mock.conf
 
 # Mock backends (OCR, AI, STT)
-COPY mrdocument/tests/integration/mock_backends.py /app/mock/mock_backends.py
-COPY mrdocument/tests/integration/mock_anthropic.py /app/mock/mock_anthropic.py
-COPY mrdocument/tests/integration/mock_stt.py /app/mock/mock_stt.py
-COPY mrdocument/tests/integration/mock_ocr.py /app/mock/mock_ocr.py
+COPY tests/integration/mock_backends.py /app/mock/mock_backends.py
+COPY tests/integration/mock_anthropic.py /app/mock/mock_anthropic.py
+COPY tests/integration/mock_stt.py /app/mock/mock_stt.py
+COPY tests/integration/mock_ocr.py /app/mock/mock_ocr.py
 
 # Entrypoint
-COPY mrdocument/tests/integration/entrypoint.sh /app/entrypoint.sh
+COPY tests/integration/entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # ---------------------------------------------------------------------------

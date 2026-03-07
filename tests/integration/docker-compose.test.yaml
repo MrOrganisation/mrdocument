@@ -1,8 +1,8 @@
 services:
   mrdocument-test:
     build:
-      context: ../../..
-      dockerfile: mrdocument/tests/integration/Dockerfile
+      context: ../..
+      dockerfile: tests/integration/Dockerfile
     env_file:
       - .env
     environment:
