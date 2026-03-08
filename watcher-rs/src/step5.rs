@@ -553,3 +553,559 @@ fn compute_relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{SmartFolderCondition, SmartFolderConfig};
+    use crate::models::{PathEntry, Record, State};
+    use chrono::Utc;
+    use regex::Regex;
+    use std::fs;
+    use std::os::unix::fs as unix_fs;
+    use tempfile::TempDir;
+
+    /// Helper to build a SmartFolderConfig without going through YAML parsing.
+    fn make_sf_config(name: &str, condition: Option<SmartFolderCondition>, filename_regex: Option<&str>) -> SmartFolderConfig {
+        // We must use from_dict since compiled_filename_regex is private.
+        // Build a minimal YAML value for it.
+        let mut map = serde_yaml::Mapping::new();
+
+        if let Some(cond) = &condition {
+            // Serialize condition as YAML
+            let cond_yaml = condition_to_yaml(cond);
+            map.insert(
+                serde_yaml::Value::String("condition".into()),
+                cond_yaml,
+            );
+        }
+
+        if let Some(re) = filename_regex {
+            map.insert(
+                serde_yaml::Value::String("filename_regex".into()),
+                serde_yaml::Value::String(re.into()),
+            );
+        }
+
+        // If neither condition nor filename_regex, add a trivial condition
+        if condition.is_none() && filename_regex.is_none() {
+            let mut cond_map = serde_yaml::Mapping::new();
+            cond_map.insert(
+                serde_yaml::Value::String("field".into()),
+                serde_yaml::Value::String("_always".into()),
+            );
+            cond_map.insert(
+                serde_yaml::Value::String("value".into()),
+                serde_yaml::Value::String(".*".into()),
+            );
+            map.insert(
+                serde_yaml::Value::String("condition".into()),
+                serde_yaml::Value::Mapping(cond_map),
+            );
+        }
+
+        SmartFolderConfig::from_dict(name, &serde_yaml::Value::Mapping(map), "test")
+            .expect("Failed to build SmartFolderConfig")
+    }
+
+    fn condition_to_yaml(cond: &SmartFolderCondition) -> serde_yaml::Value {
+        match cond {
+            SmartFolderCondition::Statement { field, value, .. } => {
+                let mut m = serde_yaml::Mapping::new();
+                m.insert(
+                    serde_yaml::Value::String("field".into()),
+                    serde_yaml::Value::String(field.clone()),
+                );
+                m.insert(
+                    serde_yaml::Value::String("value".into()),
+                    serde_yaml::Value::String(value.clone()),
+                );
+                serde_yaml::Value::Mapping(m)
+            }
+            SmartFolderCondition::Operator { op, operands } => {
+                let mut m = serde_yaml::Mapping::new();
+                m.insert(
+                    serde_yaml::Value::String("operator".into()),
+                    serde_yaml::Value::String(op.clone()),
+                );
+                let ops: Vec<serde_yaml::Value> = operands.iter().map(condition_to_yaml).collect();
+                m.insert(
+                    serde_yaml::Value::String("operands".into()),
+                    serde_yaml::Value::Sequence(ops),
+                );
+                serde_yaml::Value::Mapping(m)
+            }
+        }
+    }
+
+    fn make_statement(field: &str, value: &str) -> SmartFolderCondition {
+        SmartFolderCondition::Statement {
+            field: field.into(),
+            value: value.into(),
+            compiled: Regex::new(&format!("(?i){}", value)).ok(),
+        }
+    }
+
+    fn make_record_in_sorted(ctx: &str, filename: &str) -> Record {
+        let mut r = Record::new(filename.into(), "hash123".into());
+        r.state = State::IsComplete;
+        r.context = Some(ctx.into());
+        r.current_paths = vec![PathEntry {
+            path: format!("sorted/{}/{}", ctx, filename),
+            timestamp: Utc::now(),
+        }];
+        r
+    }
+
+    fn setup_sorted_file(root: &Path, ctx: &str, filename: &str) {
+        let dir = root.join("sorted").join(ctx);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(filename), b"test content").unwrap();
+    }
+
+    // -----------------------------------------------------------------------
+    // SmartFolderReconciler tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_creates_symlink_for_matching_record() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+        let r = make_record_in_sorted("work", "invoice.pdf");
+
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/receipts/invoice.pdf");
+        assert!(link_path.exists(), "Symlink should exist");
+        assert!(is_symlink(&link_path), "Should be a symlink");
+    }
+
+    #[test]
+    fn test_no_symlink_if_not_complete() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.state = State::NeedsProcessing;
+
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/receipts/invoice.pdf");
+        assert!(!link_path.exists(), "Symlink should not exist for non-complete record");
+    }
+
+    #[test]
+    fn test_no_symlink_if_not_in_sorted() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/invoice.pdf"), b"test").unwrap();
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+        let mut r = Record::new("invoice.pdf".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = Some("work".into());
+        r.current_paths = vec![PathEntry {
+            path: "archive/invoice.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        reconciler.reconcile(&[r]);
+
+        // No symlinks should be created in archive
+        assert!(!root.join("archive/receipts").exists());
+    }
+
+    #[test]
+    fn test_no_symlink_if_no_context() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+        let mut r = Record::new("invoice.pdf".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = None; // no context
+        r.current_paths = vec![PathEntry {
+            path: "sorted/work/invoice.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/receipts/invoice.pdf");
+        assert!(!link_path.exists());
+    }
+
+    #[test]
+    fn test_removes_symlink_if_condition_fails() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        // Create a pre-existing symlink
+        let sf_dir = root.join("sorted/work/typed");
+        fs::create_dir_all(&sf_dir).unwrap();
+        unix_fs::symlink(PathBuf::from("..").join("invoice.pdf"), sf_dir.join("invoice.pdf")).unwrap();
+        assert!(sf_dir.join("invoice.pdf").exists());
+
+        // Create a condition that won't match
+        let cond = make_statement("doc_type", "contract");
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("typed", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        // metadata doesn't have doc_type=contract
+        r.metadata = Some(serde_json::json!({"doc_type": "invoice"}));
+
+        reconciler.reconcile(&[r]);
+
+        // Symlink should be removed since condition doesn't match
+        assert!(!is_symlink(&sf_dir.join("invoice.pdf")));
+    }
+
+    #[test]
+    fn test_multiple_smart_folders() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let sf1 = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("all_docs", None, None),
+        };
+        let sf2 = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("pdfs", None, Some(r"\.pdf$")),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf1, sf2]);
+
+        let r = make_record_in_sorted("work", "invoice.pdf");
+        reconciler.reconcile(&[r]);
+
+        assert!(root.join("sorted/work/all_docs/invoice.pdf").exists());
+        assert!(root.join("sorted/work/pdfs/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_cleanup_orphans_broken_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create smart folder dir with a broken symlink
+        let sf_dir = root.join("sorted/work/receipts");
+        fs::create_dir_all(&sf_dir).unwrap();
+        // Also create the parent context dir as a regular file location
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        unix_fs::symlink(
+            PathBuf::from("..").join("nonexistent.pdf"),
+            sf_dir.join("orphan.pdf"),
+        )
+        .unwrap();
+        assert!(is_symlink(&sf_dir.join("orphan.pdf")));
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+        reconciler.cleanup_orphans();
+
+        assert!(!is_symlink(&sf_dir.join("orphan.pdf")));
+    }
+
+    #[test]
+    fn test_cleanup_orphans_stale_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create a real file in leaf folder
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/kept.pdf"), b"real").unwrap();
+
+        // Create smart folder dir with symlink to a file that no longer exists in leaf
+        let sf_dir = root.join("sorted/work/receipts");
+        fs::create_dir_all(&sf_dir).unwrap();
+        // Create a valid symlink target first (to avoid broken symlink path)
+        fs::write(root.join("sorted/work/removed.pdf"), b"temp").unwrap();
+        unix_fs::symlink(
+            PathBuf::from("..").join("removed.pdf"),
+            sf_dir.join("removed.pdf"),
+        )
+        .unwrap();
+        // Now remove the real file so the symlink name won't match leaf files
+        // Actually the cleanup checks if the symlink name exists in leaf folder as a real file.
+        // The symlink target still exists though. Let's remove the real file.
+        fs::remove_file(root.join("sorted/work/removed.pdf")).unwrap();
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+        reconciler.cleanup_orphans();
+
+        // Broken symlink should be cleaned up
+        assert!(!sf_dir.join("removed.pdf").exists());
+    }
+
+    #[test]
+    fn test_filename_regex_filter() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+        setup_sorted_file(&root, "work", "photo.jpg");
+
+        // Only match .pdf files
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("pdfs_only", None, Some(r"\.pdf$")),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let r1 = make_record_in_sorted("work", "invoice.pdf");
+        let r2 = make_record_in_sorted("work", "photo.jpg");
+        reconciler.reconcile(&[r1, r2]);
+
+        assert!(root.join("sorted/work/pdfs_only/invoice.pdf").exists());
+        assert!(!root.join("sorted/work/pdfs_only/photo.jpg").exists());
+    }
+
+    #[test]
+    fn test_condition_field_equals() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let cond = make_statement("doc_type", "invoice");
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("invoices", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.metadata = Some(serde_json::json!({"doc_type": "invoice"}));
+        reconciler.reconcile(&[r]);
+
+        assert!(root.join("sorted/work/invoices/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_and() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let cond = SmartFolderCondition::Operator {
+            op: "and".into(),
+            operands: vec![
+                make_statement("doc_type", "invoice"),
+                make_statement("year", "2024"),
+            ],
+        };
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("inv2024", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        // Both conditions match
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.metadata = Some(serde_json::json!({"doc_type": "invoice", "year": "2024"}));
+        reconciler.reconcile(&[r]);
+        assert!(root.join("sorted/work/inv2024/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_and_fails_partial() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let cond = SmartFolderCondition::Operator {
+            op: "and".into(),
+            operands: vec![
+                make_statement("doc_type", "invoice"),
+                make_statement("year", "2024"),
+            ],
+        };
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("inv2024", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        // Only one condition matches
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.metadata = Some(serde_json::json!({"doc_type": "invoice", "year": "2023"}));
+        reconciler.reconcile(&[r]);
+        assert!(!root.join("sorted/work/inv2024/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_or() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "contract.pdf");
+
+        let cond = SmartFolderCondition::Operator {
+            op: "or".into(),
+            operands: vec![
+                make_statement("doc_type", "invoice"),
+                make_statement("doc_type", "contract"),
+            ],
+        };
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("important", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let mut r = make_record_in_sorted("work", "contract.pdf");
+        r.metadata = Some(serde_json::json!({"doc_type": "contract"}));
+        reconciler.reconcile(&[r]);
+        assert!(root.join("sorted/work/important/contract.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_not() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "memo.pdf");
+
+        let cond = SmartFolderCondition::Operator {
+            op: "not".into(),
+            operands: vec![make_statement("doc_type", "invoice")],
+        };
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("non_invoices", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let mut r = make_record_in_sorted("work", "memo.pdf");
+        r.metadata = Some(serde_json::json!({"doc_type": "memo"}));
+        reconciler.reconcile(&[r]);
+        assert!(root.join("sorted/work/non_invoices/memo.pdf").exists());
+    }
+
+    #[test]
+    fn test_collision_avoidance_real_file_exists() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        // Create a real file (not symlink) at the would-be symlink location
+        let sf_dir = root.join("sorted/work/receipts");
+        fs::create_dir_all(&sf_dir).unwrap();
+        fs::write(sf_dir.join("invoice.pdf"), b"real file, not symlink").unwrap();
+
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("receipts", None, None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let r = make_record_in_sorted("work", "invoice.pdf");
+        reconciler.reconcile(&[r]);
+
+        // The real file should not be overwritten -- it should still exist and not be a symlink
+        assert!(sf_dir.join("invoice.pdf").exists());
+        assert!(!is_symlink(&sf_dir.join("invoice.pdf")));
+        assert_eq!(
+            fs::read_to_string(sf_dir.join("invoice.pdf")).unwrap(),
+            "real file, not symlink"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // RootSmartFolderReconciler tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_root_smart_folder_creates_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let rsf_dir = root.join("root_sf");
+        let entry = RootSmartFolderEntry {
+            name: "work_invoices".into(),
+            context: "work".into(),
+            path: rsf_dir.clone(),
+            config: make_sf_config("work_invoices", None, None),
+        };
+        let reconciler = RootSmartFolderReconciler::new(root.clone(), vec![entry]);
+
+        let r = make_record_in_sorted("work", "invoice.pdf");
+        reconciler.reconcile(&[r]);
+
+        let link_path = rsf_dir.join("invoice.pdf");
+        assert!(link_path.exists(), "Root smart folder symlink should exist");
+        assert!(is_symlink(&link_path), "Should be a symlink");
+        // Verify the symlink resolves to the actual file
+        let resolved = link_path.canonicalize().unwrap();
+        let expected = root.join("sorted/work/invoice.pdf").canonicalize().unwrap();
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn test_root_smart_folder_cleanup() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create a sorted file
+        setup_sorted_file(&root, "work", "kept.pdf");
+
+        // Create root smart folder dir with a symlink to a now-removed sorted file
+        let rsf_dir = root.join("root_sf");
+        fs::create_dir_all(&rsf_dir).unwrap();
+
+        // Create a file that we'll remove later, then create symlink to it
+        let sorted_work = root.join("sorted/work");
+        fs::write(sorted_work.join("removed.pdf"), b"temp").unwrap();
+        let relative_target = compute_relative_path(&rsf_dir, &sorted_work.join("removed.pdf"));
+        unix_fs::symlink(&relative_target, rsf_dir.join("removed.pdf")).unwrap();
+        assert!(is_symlink(&rsf_dir.join("removed.pdf")));
+
+        // Now remove the target
+        fs::remove_file(sorted_work.join("removed.pdf")).unwrap();
+
+        let entry = RootSmartFolderEntry {
+            name: "work_all".into(),
+            context: "work".into(),
+            path: rsf_dir.clone(),
+            config: make_sf_config("work_all", None, None),
+        };
+        let reconciler = RootSmartFolderReconciler::new(root.clone(), vec![entry]);
+        reconciler.cleanup_orphans();
+
+        // The broken symlink pointing into sorted/ should be removed
+        assert!(!rsf_dir.join("removed.pdf").exists());
+    }
+}

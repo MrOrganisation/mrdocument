@@ -238,7 +238,7 @@ impl Record {
     ///
     /// # Examples
     /// ```
-    /// # use watcher_rs::models::Record;
+    /// # use watcher::models::Record;
     /// assert_eq!(
     ///     Record::decompose_path("archive/sub/file.pdf"),
     ///     ("archive".into(), "sub".into(), "file.pdf".into()),
@@ -383,5 +383,201 @@ mod tests {
         assert!(rec.current_reference.is_none());
         assert!(rec.duplicate_sources.is_empty());
         assert!(rec.deleted_paths.is_empty());
+    }
+
+    #[test]
+    fn test_all_state_values() {
+        let expected = vec![
+            (State::IsNew, "is_new"),
+            (State::NeedsProcessing, "needs_processing"),
+            (State::IsComplete, "is_complete"),
+            (State::IsMissing, "is_missing"),
+            (State::HasError, "has_error"),
+            (State::NeedsDeletion, "needs_deletion"),
+            (State::IsDeleted, "is_deleted"),
+        ];
+        assert_eq!(expected.len(), 7);
+        for (state, expected_str) in &expected {
+            assert_eq!(state.as_str(), *expected_str);
+        }
+    }
+
+    #[test]
+    fn test_invalid_state_parse() {
+        let result = "nonexistent".parse::<State>();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pathentry_creation() {
+        let ts = "2024-01-15T10:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        let pe = PathEntry {
+            path: "archive/test.pdf".to_string(),
+            timestamp: ts,
+        };
+        assert_eq!(pe.path, "archive/test.pdf");
+        assert_eq!(pe.timestamp, ts);
+    }
+
+    #[test]
+    fn test_pathentry_sorting() {
+        let t1 = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let t2 = "2024-06-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let t3 = "2024-03-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut entries = vec![
+            PathEntry { path: "c.pdf".into(), timestamp: t3 },
+            PathEntry { path: "a.pdf".into(), timestamp: t1 },
+            PathEntry { path: "b.pdf".into(), timestamp: t2 },
+        ];
+        entries.sort_by_key(|pe| pe.timestamp);
+        assert_eq!(entries[0].path, "a.pdf");
+        assert_eq!(entries[1].path, "c.pdf");
+        assert_eq!(entries[2].path, "b.pdf");
+    }
+
+    #[test]
+    fn test_record_minimal_construction() {
+        let rec = Record::new("test.pdf".into(), "hash123".into());
+        assert_eq!(rec.original_filename, "test.pdf");
+        assert_eq!(rec.source_hash, "hash123");
+        assert_eq!(rec.state, State::IsNew);
+        assert!(rec.source_paths.is_empty());
+        assert!(rec.current_paths.is_empty());
+        assert!(rec.missing_source_paths.is_empty());
+        assert!(rec.missing_current_paths.is_empty());
+        assert!(rec.duplicate_sources.is_empty());
+        assert!(rec.deleted_paths.is_empty());
+        assert!(rec.context.is_none());
+        assert!(rec.metadata.is_none());
+        assert!(rec.assigned_filename.is_none());
+        assert!(rec.hash.is_none());
+        assert!(rec.output_filename.is_none());
+        assert!(rec.target_path.is_none());
+        assert!(rec.source_reference.is_none());
+        assert!(rec.current_reference.is_none());
+        assert!(rec.username.is_none());
+    }
+
+    #[test]
+    fn test_record_partial_construction() {
+        let ts = "2024-05-01T12:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut rec = Record::new("report.pdf".into(), "abc".into());
+        rec.source_paths.push(PathEntry {
+            path: "incoming/report.pdf".into(),
+            timestamp: ts,
+        });
+        rec.state = State::NeedsProcessing;
+        assert_eq!(rec.state, State::NeedsProcessing);
+        assert_eq!(rec.source_paths.len(), 1);
+        assert_eq!(rec.source_paths[0].path, "incoming/report.pdf");
+    }
+
+    #[test]
+    fn test_record_mutable_defaults_independent() {
+        let mut rec1 = Record::new("a.pdf".into(), "h1".into());
+        let rec2 = Record::new("b.pdf".into(), "h2".into());
+        let ts = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        rec1.source_paths.push(PathEntry {
+            path: "incoming/a.pdf".into(),
+            timestamp: ts,
+        });
+        // rec2 should not be affected
+        assert!(rec2.source_paths.is_empty());
+    }
+
+    #[test]
+    fn test_source_file_none_when_empty() {
+        let rec = Record::new("test.pdf".into(), "abc".into());
+        assert!(rec.source_file().is_none());
+        assert!(rec.source_location().is_none());
+        assert!(rec.source_filename().is_none());
+    }
+
+    #[test]
+    fn test_current_file_none_when_empty() {
+        let rec = Record::new("test.pdf".into(), "abc".into());
+        assert!(rec.current_file().is_none());
+        assert!(rec.current_location().is_none());
+        assert!(rec.current_filename().is_none());
+    }
+
+    #[test]
+    fn test_two_segment_path() {
+        let ts = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut rec = Record::new("file.pdf".into(), "h".into());
+        rec.source_paths.push(PathEntry {
+            path: "archive/file.pdf".into(),
+            timestamp: ts,
+        });
+        assert_eq!(rec.source_location(), Some("archive".into()));
+        assert_eq!(rec.source_location_path(), Some("".into()));
+        assert_eq!(rec.source_filename(), Some("file.pdf".into()));
+    }
+
+    #[test]
+    fn test_three_segment_path() {
+        let ts = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut rec = Record::new("file.pdf".into(), "h".into());
+        rec.source_paths.push(PathEntry {
+            path: "archive/sub/file.pdf".into(),
+            timestamp: ts,
+        });
+        assert_eq!(rec.source_location(), Some("archive".into()));
+        assert_eq!(rec.source_location_path(), Some("sub".into()));
+        assert_eq!(rec.source_filename(), Some("file.pdf".into()));
+    }
+
+    #[test]
+    fn test_deep_sorted_path() {
+        let ts = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut rec = Record::new("file.pdf".into(), "h".into());
+        rec.current_paths.push(PathEntry {
+            path: "sorted/work/invoices/file.pdf".into(),
+            timestamp: ts,
+        });
+        assert_eq!(rec.current_location(), Some("sorted".into()));
+        assert_eq!(rec.current_location_path(), Some("work/invoices".into()));
+        assert_eq!(rec.current_filename(), Some("file.pdf".into()));
+    }
+
+    #[test]
+    fn test_output_path() {
+        let ts = "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let mut rec = Record::new("file.pdf".into(), "h".into());
+        rec.current_paths.push(PathEntry {
+            path: ".output/some-uuid".into(),
+            timestamp: ts,
+        });
+        assert_eq!(rec.current_location(), Some(".output".into()));
+        assert_eq!(rec.current_location_path(), Some("".into()));
+        assert_eq!(rec.current_filename(), Some("some-uuid".into()));
+    }
+
+    #[test]
+    fn test_change_item_addition() {
+        let item = ChangeItem {
+            event_type: EventType::Addition,
+            path: "incoming/doc.pdf".into(),
+            hash: Some("abc123".into()),
+            size: Some(1024),
+        };
+        assert_eq!(item.event_type, EventType::Addition);
+        assert_eq!(item.path, "incoming/doc.pdf");
+        assert_eq!(item.hash, Some("abc123".into()));
+        assert_eq!(item.size, Some(1024));
+    }
+
+    #[test]
+    fn test_change_item_removal() {
+        let item = ChangeItem {
+            event_type: EventType::Removal,
+            path: "archive/old.pdf".into(),
+            hash: None,
+            size: None,
+        };
+        assert_eq!(item.event_type, EventType::Removal);
+        assert_eq!(item.path, "archive/old.pdf");
+        assert!(item.hash.is_none());
+        assert!(item.size.is_none());
     }
 }

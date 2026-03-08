@@ -981,4 +981,108 @@ mod tests {
         assert!(cfg.enable_diarization);
         assert_eq!(cfg.diarization_speaker_count, 2);
     }
+
+    #[test]
+    fn test_stt_config_load_from_yaml() {
+        let dir = tempfile::TempDir::new().unwrap();
+        std::fs::write(
+            dir.path().join("stt.yaml"),
+            "language: en-US\nenable_diarization: false\n",
+        )
+        .unwrap();
+        let config = SttConfig::load(dir.path()).unwrap();
+        assert_eq!(config.language, "en-US");
+        assert!(!config.enable_diarization);
+        // Fields not specified in YAML should get defaults
+        assert_eq!(config.elevenlabs_model, "scribe_v2");
+        assert_eq!(config.diarization_speaker_count, 2);
+    }
+
+    #[test]
+    fn test_stt_config_load_missing() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // No stt.yaml file exists
+        let config = SttConfig::load(dir.path());
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_stt_config_load_empty() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Empty file should return default config
+        std::fs::write(dir.path().join("stt.yaml"), "").unwrap();
+        let config = SttConfig::load(dir.path()).unwrap();
+        assert_eq!(config.language, "de-DE");
+        assert_eq!(config.elevenlabs_model, "scribe_v2");
+        assert!(config.enable_diarization);
+        assert_eq!(config.diarization_speaker_count, 2);
+    }
+
+    #[test]
+    fn test_stt_config_custom_values() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let yaml = "\
+language: fr-FR
+elevenlabs_model: custom_model_v3
+enable_diarization: true
+diarization_speaker_count: 5
+";
+        std::fs::write(dir.path().join("stt.yaml"), yaml).unwrap();
+        let config = SttConfig::load(dir.path()).unwrap();
+        assert_eq!(config.language, "fr-FR");
+        assert_eq!(config.elevenlabs_model, "custom_model_v3");
+        assert!(config.enable_diarization);
+        assert_eq!(config.diarization_speaker_count, 5);
+    }
+
+    #[test]
+    fn test_all_audio_extensions() {
+        let expected = vec![
+            ".flac", ".wav", ".mp3", ".ogg", ".webm", ".mp4", ".m4a", ".mkv", ".avi", ".mov",
+        ];
+        for ext in &expected {
+            assert!(
+                AUDIO_EXTENSIONS.contains(ext),
+                "AUDIO_EXTENSIONS missing {}",
+                ext
+            );
+        }
+        assert_eq!(AUDIO_EXTENSIONS.len(), expected.len());
+    }
+
+    #[test]
+    fn test_all_document_extensions() {
+        let expected = vec![
+            ".pdf", ".eml", ".html", ".htm", ".docx", ".txt", ".md", ".rtf", ".jpg", ".jpeg",
+            ".png", ".gif", ".tiff", ".tif", ".bmp", ".webp", ".ppm", ".pgm", ".pbm", ".pnm",
+        ];
+        for ext in &expected {
+            assert!(
+                DOCUMENT_EXTENSIONS.contains(ext),
+                "DOCUMENT_EXTENSIONS missing {}",
+                ext
+            );
+        }
+        assert_eq!(DOCUMENT_EXTENSIONS.len(), expected.len());
+    }
+
+    #[test]
+    fn test_content_type_map_completeness() {
+        // Every extension in AUDIO_EXTENSIONS and DOCUMENT_EXTENSIONS
+        // should have a mapping in CONTENT_TYPE_MAP.
+        for ext in AUDIO_EXTENSIONS.iter().chain(DOCUMENT_EXTENSIONS.iter()) {
+            assert!(
+                CONTENT_TYPE_MAP.contains_key(ext),
+                "CONTENT_TYPE_MAP missing mapping for {}",
+                ext
+            );
+            // The mapped value should not be the fallback
+            let ct = get_content_type(ext);
+            assert_ne!(
+                ct, "application/octet-stream",
+                "Extension {} maps to fallback content type",
+                ext
+            );
+        }
+    }
 }

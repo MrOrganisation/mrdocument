@@ -97,7 +97,7 @@ static COLLISION_SUFFIX_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"_[0-9a-f]{8}(\.[^.]+)$").unwrap());
 
 /// Check if `actual_path` is `expected_path` or a collision-suffixed variant.
-fn is_collision_variant(actual_path: &str, expected_path: &str) -> bool {
+pub(crate) fn is_collision_variant(actual_path: &str, expected_path: &str) -> bool {
     if actual_path == expected_path {
         return true;
     }
@@ -760,4 +760,2218 @@ pub fn reconcile<'a>(
     }
 
     Some(record)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{ChangeItem, EventType, PathEntry, Record, State};
+    use chrono::{DateTime, Duration, Utc};
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    // -----------------------------------------------------------------------
+    // Helpers
+    // -----------------------------------------------------------------------
+
+    fn _ts(offset_hours: i64) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2025-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc)
+            + Duration::hours(offset_hours)
+    }
+
+    /// Create a Record with sensible defaults.  Caller can override fields
+    /// after construction.
+    fn _make_record() -> Record {
+        Record::new("test.pdf".to_string(), "abc123".to_string())
+    }
+
+    fn _make_change(
+        event_type: EventType,
+        path: &str,
+        hash: Option<&str>,
+        size: Option<u64>,
+    ) -> ChangeItem {
+        ChangeItem {
+            event_type,
+            path: path.to_string(),
+            hash: hash.map(|s| s.to_string()),
+            size,
+        }
+    }
+
+    fn _noop_sidecar(_path: &str) -> serde_json::Value {
+        json!({})
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessOutput (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_output_matches_sidecar_ingested() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.output_filename = Some("uuid-123".to_string());
+            r.state = State::NeedsProcessing;
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-123",
+            Some("content_hash"),
+            Some(1024),
+        );
+        let sidecar_data = json!({
+            "context": "work",
+            "metadata": {"date": "2025-01-01", "title": "Invoice"},
+            "assigned_filename": "2025-01-Invoice.pdf",
+        });
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, |_p| {
+                sidecar_data.clone()
+            });
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(modified_ids.contains(&records[0].id));
+        assert_eq!(records[0].context.as_deref(), Some("work"));
+        assert_eq!(
+            records[0].metadata,
+            Some(json!({"date": "2025-01-01", "title": "Invoice"}))
+        );
+        assert_eq!(
+            records[0].assigned_filename.as_deref(),
+            Some("2025-01-Invoice.pdf")
+        );
+        assert_eq!(records[0].hash.as_deref(), Some("content_hash"));
+        assert!(records[0].output_filename.is_none());
+        assert_eq!(records[0].current_paths.len(), 1);
+        assert_eq!(records[0].current_paths[0].path, ".output/uuid-123");
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_output_zero_byte_sets_error() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.output_filename = Some("uuid-456".to_string());
+            r.state = State::NeedsProcessing;
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-456",
+            Some("empty_hash"),
+            Some(0),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert_eq!(records[0].state, State::HasError);
+        assert!(records[0].output_filename.is_none());
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_output_no_match_ignored() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.output_filename = Some("other-uuid".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/unknown-uuid",
+            Some("some_hash"),
+            Some(100),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert!(modified_ids.is_empty());
+        assert!(created.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessIncoming (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incoming_matches_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "file_hash_abc".to_string();
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "incoming/doc.pdf",
+            Some("file_hash_abc"),
+            Some(500),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(modified_ids.contains(&records[0].id));
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/doc.pdf"));
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_incoming_unknown_creates_new() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "existing_hash".to_string();
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "incoming/new.pdf",
+            Some("new_hash"),
+            Some(1024),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert!(modified_ids.is_empty());
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].original_filename, "new.pdf");
+        assert_eq!(created[0].source_hash, "new_hash");
+        assert_eq!(created[0].source_paths[0].path, "incoming/new.pdf");
+    }
+
+    #[test]
+    fn test_two_identical_sources_same_cycle() {
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change_a = _make_change(
+            EventType::Addition,
+            "incoming/a.pdf",
+            Some("same_hash"),
+            Some(500),
+        );
+        let change_b = _make_change(
+            EventType::Addition,
+            "incoming/b.pdf",
+            Some("same_hash"),
+            Some(500),
+        );
+
+        let (_modified_ids, created) = preprocess(
+            &[change_a, change_b],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+        );
+
+        assert_eq!(
+            created.len(),
+            1,
+            "Expected 1 record for identical sources, got {}",
+            created.len()
+        );
+        let paths: Vec<&str> = created[0].source_paths.iter().map(|pe| pe.path.as_str()).collect();
+        assert!(paths.contains(&"incoming/a.pdf"));
+        assert!(paths.contains(&"incoming/b.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessSorted (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sorted_matches_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.hash = Some("sorted_hash".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/work/doc.pdf",
+            Some("sorted_hash"),
+            Some(800),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/doc.pdf"));
+    }
+
+    #[test]
+    fn test_sorted_matches_source_hash_not_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "src_hash".to_string();
+            r.hash = Some("different_hash".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/work/original.pdf",
+            Some("src_hash"),
+            Some(600),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/original.pdf"));
+        assert!(!records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/original.pdf"));
+    }
+
+    #[test]
+    fn test_sorted_unknown_creates_new() {
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/personal/unknown.pdf",
+            Some("unknown_hash"),
+            Some(300),
+        );
+
+        let (_modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].original_filename, "unknown.pdf");
+        assert_eq!(created[0].context.as_deref(), Some("personal"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessOtherLocations (7 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_matches_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "arch_hash".to_string();
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "archive/doc.pdf",
+            Some("arch_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "archive/doc.pdf"));
+    }
+
+    #[test]
+    fn test_missing_matches_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "miss_hash".to_string();
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "missing/doc.pdf",
+            Some("miss_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "missing/doc.pdf"));
+    }
+
+    #[test]
+    fn test_missing_both_match_uses_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "both_hash".to_string();
+            r.hash = Some("both_hash".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "missing/doc.pdf",
+            Some("both_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "missing/doc.pdf"));
+        assert!(!records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "missing/doc.pdf"));
+    }
+
+    #[test]
+    fn test_missing_unknown_not_created() {
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "missing/stray.pdf",
+            Some("stray_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert!(modified_ids.is_empty());
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_archive_unknown_not_created() {
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "archive/stray.pdf",
+            Some("stray_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert!(modified_ids.is_empty());
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_processed_matches_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.hash = Some("proc_hash".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "processed/doc.pdf",
+            Some("proc_hash"),
+            Some(700),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "processed/doc.pdf"));
+    }
+
+    #[test]
+    fn test_trash_matches_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "trash_hash".to_string();
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "trash/doc.pdf",
+            Some("trash_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "trash/doc.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessRemovals (2 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_removal_from_source_paths() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_paths.push(PathEntry {
+                path: "incoming/doc.pdf".to_string(),
+                timestamp: _ts(0),
+            });
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(EventType::Removal, "incoming/doc.pdf", None, None);
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(!records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/doc.pdf"));
+        assert!(records[0]
+            .missing_source_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/doc.pdf"));
+    }
+
+    #[test]
+    fn test_removal_from_current_paths() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.current_paths.push(PathEntry {
+                path: "sorted/work/doc.pdf".to_string(),
+                timestamp: _ts(0),
+            });
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(EventType::Removal, "sorted/work/doc.pdf", None, None);
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(!records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/doc.pdf"));
+        assert!(records[0]
+            .missing_current_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/doc.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessLocationAware (2 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_archive_both_match_uses_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "both_hash".to_string();
+            r.hash = Some("both_hash".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "archive/doc.pdf",
+            Some("both_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "archive/doc.pdf"));
+        assert!(!records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "archive/doc.pdf"));
+    }
+
+    #[test]
+    fn test_sorted_both_match_prefers_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "both_hash".to_string();
+            r.hash = Some("both_hash".to_string());
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/work/doc.pdf",
+            Some("both_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/doc.pdf"));
+        assert!(!records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/doc.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessIdempotency (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_duplicate_source_path_not_appended() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "abc123".to_string();
+            r.state = State::IsComplete;
+            r.source_paths.push(PathEntry {
+                path: "archive/doc.pdf".to_string(),
+                timestamp: _ts(0),
+            });
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "archive/doc.pdf",
+            Some("abc123"),
+            Some(100),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(
+            modified_ids.len(),
+            0,
+            "Record should not be marked modified"
+        );
+        assert_eq!(
+            records[0].source_paths.len(),
+            1,
+            "No duplicate path should be added"
+        );
+    }
+
+    #[test]
+    fn test_duplicate_current_path_not_appended() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.hash = Some("def456".to_string());
+            r.state = State::IsComplete;
+            r.current_paths.push(PathEntry {
+                path: "sorted/work/doc.pdf".to_string(),
+                timestamp: _ts(0),
+            });
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/work/doc.pdf",
+            Some("def456"),
+            Some(100),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(
+            modified_ids.len(),
+            0,
+            "Record should not be marked modified"
+        );
+        assert_eq!(
+            records[0].current_paths.len(),
+            1,
+            "No duplicate path should be added"
+        );
+    }
+
+    #[test]
+    fn test_new_path_still_appended() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "abc123".to_string();
+            r.state = State::IsComplete;
+            r.source_paths.push(PathEntry {
+                path: "archive/old.pdf".to_string(),
+                timestamp: _ts(0),
+            });
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "incoming/new-copy.pdf",
+            Some("abc123"),
+            Some(100),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/new-copy.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestReconcileSourcePaths (9 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_source_in_trash() {
+        let mut record = _make_record();
+        record.source_paths.push(PathEntry {
+            path: "trash/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsDeletion);
+    }
+
+    #[test]
+    fn test_is_new_sets_processing() {
+        let mut record = _make_record();
+        record.state = State::IsNew;
+        record.source_paths.push(PathEntry {
+            path: "incoming/invoice.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+        assert_eq!(r.source_reference.as_deref(), Some("incoming/invoice.pdf"));
+        let archive_entries: Vec<_> = r
+            .source_paths
+            .iter()
+            .filter(|pe| pe.path.starts_with("archive/"))
+            .collect();
+        assert_eq!(archive_entries.len(), 1);
+        assert_eq!(archive_entries[0].path, "archive/invoice.pdf");
+    }
+
+    #[test]
+    fn test_source_not_archive_not_lost() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.source_paths.push(PathEntry {
+            path: "incoming/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.source_paths.push(PathEntry {
+            path: "incoming/copy.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.source_reference.as_deref(), Some("incoming/copy.pdf"));
+        assert!(r.duplicate_sources.contains(&"incoming/doc.pdf".to_string()));
+        let archive_entries: Vec<_> = r
+            .source_paths
+            .iter()
+            .filter(|pe| pe.path.starts_with("archive/"))
+            .collect();
+        assert!(!archive_entries.is_empty());
+    }
+
+    #[test]
+    fn test_is_complete_new_source_is_duplicate() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.source_paths.push(PathEntry {
+            path: "incoming/doc.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+        record.hash = Some("abc".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.duplicate_sources.contains(&"incoming/doc.pdf".to_string()));
+        assert!(r.source_paths.iter().any(|pe| pe.path == "archive/doc.pdf"));
+        assert!(!r
+            .source_paths
+            .iter()
+            .any(|pe| pe.path.starts_with("incoming/")));
+        assert!(r
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "sorted/work/doc.pdf"));
+        assert!(r.output_filename.is_none());
+    }
+
+    #[test]
+    fn test_is_complete_new_source_in_sorted_is_duplicate() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.source_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.current_paths.push(PathEntry {
+            path: "processed/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+        record.hash = Some("abc".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r
+            .duplicate_sources
+            .contains(&"sorted/work/doc.pdf".to_string()));
+        assert!(!r.source_paths.iter().any(|pe| {
+            let (loc, _, _) = Record::decompose_path(&pe.path);
+            loc == "sorted"
+        }));
+    }
+
+    #[test]
+    fn test_is_complete_source_in_archive_no_duplicate() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+        record.hash = Some("abc".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.duplicate_sources.is_empty());
+    }
+
+    #[test]
+    fn test_is_missing_recovers_with_new_source() {
+        let mut record = _make_record();
+        record.state = State::IsMissing;
+        record.source_paths.push(PathEntry {
+            path: "missing/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.source_paths.push(PathEntry {
+            path: "incoming/doc.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+        record.hash = Some("abc".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+    }
+
+    #[test]
+    fn test_is_missing_sets_source_reference() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+        record.hash = Some("abc".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsMissing);
+        assert_eq!(r.source_reference.as_deref(), Some("archive/doc.pdf"));
+    }
+
+    #[test]
+    fn test_is_missing_no_source_reference_without_archive() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.source_paths.push(PathEntry {
+            path: "missing/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+        record.hash = Some("abc".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsMissing);
+        assert!(r.source_reference.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TestReconcileHasError (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_error_source_in_error_no_current_deletes() {
+        let mut record = _make_record();
+        record.state = State::HasError;
+        record.source_paths.push(PathEntry {
+            path: "error/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_error_source_in_archive() {
+        let mut record = _make_record();
+        record.state = State::HasError;
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.duplicate_sources.push("incoming/extra.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.source_reference.as_deref(), Some("archive/doc.pdf"));
+        assert!(r.duplicate_sources.is_empty());
+    }
+
+    #[test]
+    fn test_error_with_current_paths() {
+        let mut record = _make_record();
+        record.state = State::HasError;
+        record.source_paths.push(PathEntry {
+            path: "error/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: ".output/uuid".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert!(r.current_paths.is_empty());
+        assert!(r.deleted_paths.contains(&".output/uuid".to_string()));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestReconcileCurrentPaths (15 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_current_in_trash_needs_deletion() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: "trash/doc.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.hash = Some("some_hash".to_string());
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsDeletion);
+    }
+
+    #[test]
+    fn test_is_new_needs_processing() {
+        // No source_paths → source section skipped → reach current section
+        let mut record = _make_record();
+        record.state = State::IsNew;
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+    }
+
+    #[test]
+    fn test_is_deleted_removed() {
+        let mut record = _make_record();
+        record.state = State::IsDeleted;
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.missing_source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_needs_processing_no_current() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.output_filename = Some("some-uuid".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+    }
+
+    #[test]
+    fn test_no_current_missing_current_is_missing() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsMissing);
+    }
+
+    #[test]
+    fn test_is_missing_current_reappeared() {
+        let mut record = _make_record();
+        record.state = State::IsMissing;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+    }
+
+    #[test]
+    fn test_is_missing_still_empty() {
+        let mut record = _make_record();
+        record.state = State::IsMissing;
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsMissing);
+    }
+
+    #[test]
+    fn test_invalid_location_deleted() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "incoming/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert!(r.current_paths.is_empty());
+        assert!(r.deleted_paths.contains(&"incoming/doc.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_multiple_keep_most_recent() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/old.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/new.pdf".to_string(),
+            timestamp: _ts(2),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/mid.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("new.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.current_paths.len(), 1);
+        assert_eq!(r.current_paths[0].path, "sorted/work/new.pdf");
+        assert!(r.deleted_paths.contains(&"sorted/work/old.pdf".to_string()));
+        assert!(r.deleted_paths.contains(&"sorted/work/mid.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_single_output_target_processed() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.source_paths.push(PathEntry {
+            path: "archive/test.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: ".output/uuid-out".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("processed/2025-01-Invoice.pdf")
+        );
+        assert_eq!(r.current_reference.as_deref(), Some(".output/uuid-out"));
+    }
+
+    #[test]
+    fn test_single_output_from_sorted_target_sorted() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.source_paths.push(PathEntry {
+            path: "archive/test.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.missing_source_paths.push(PathEntry {
+            path: "sorted/work/test.pdf".to_string(),
+            timestamp: _ts(-1),
+        });
+        record.current_paths.push(PathEntry {
+            path: ".output/uuid-out".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("sorted/work/2025-01-Invoice.pdf")
+        );
+        assert_eq!(r.current_reference.as_deref(), Some(".output/uuid-out"));
+    }
+
+    #[test]
+    fn test_single_processed_is_complete() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.current_paths.push(PathEntry {
+            path: "processed/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+    }
+
+    #[test]
+    fn test_single_reviewed_target_sorted() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reviewed/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Doc.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("sorted/work/2025-01-Doc.pdf")
+        );
+        assert_eq!(r.current_reference.as_deref(), Some("reviewed/doc.pdf"));
+    }
+
+    #[test]
+    fn test_single_sorted_matches_complete() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/2025-01-Invoice.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+    }
+
+    #[test]
+    fn test_single_sorted_doesnt_match() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/wrong_name.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("wrong_name.pdf"));
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TestComputeTargetPath (5 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_target_path_with_context_and_filename() {
+        let mut record = _make_record();
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = compute_target_path(&record, None);
+
+        assert_eq!(result.as_deref(), Some("sorted/work/2025-01-Invoice.pdf"));
+    }
+
+    #[test]
+    fn test_compute_target_path_no_context_returns_none() {
+        let mut record = _make_record();
+        record.context = None;
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let result = compute_target_path(&record, None);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_compute_target_path_no_filename_returns_none() {
+        let mut record = _make_record();
+        record.context = Some("work".to_string());
+        record.assigned_filename = None;
+
+        let result = compute_target_path(&record, None);
+
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_compute_target_path_with_context_folders() {
+        let mut record = _make_record();
+        record.context = Some("arbeit".to_string());
+        record.assigned_filename = Some("arbeit-rechnung-2025.pdf".to_string());
+        record.metadata = Some(json!({
+            "context": "arbeit",
+            "sender": "Schulze GmbH",
+            "type": "Rechnung",
+        }));
+        let folders: HashMap<String, Vec<String>> =
+            [("arbeit".to_string(), vec!["context".to_string(), "sender".to_string()])]
+                .into_iter()
+                .collect();
+
+        let result = compute_target_path(&record, Some(&folders));
+
+        assert_eq!(
+            result.as_deref(),
+            Some("sorted/arbeit/Schulze GmbH/arbeit-rechnung-2025.pdf")
+        );
+    }
+
+    #[test]
+    fn test_compute_target_path_with_context_folders_missing_field() {
+        let mut record = _make_record();
+        record.context = Some("arbeit".to_string());
+        record.assigned_filename = Some("arbeit-rechnung-2025.pdf".to_string());
+        record.metadata = Some(json!({"context": "arbeit"}));
+        let folders: HashMap<String, Vec<String>> =
+            [("arbeit".to_string(), vec!["context".to_string(), "sender".to_string()])]
+                .into_iter()
+                .collect();
+
+        let result = compute_target_path(&record, Some(&folders));
+
+        // "sender" is missing, so only "context" folder part is used
+        assert_eq!(
+            result.as_deref(),
+            Some("sorted/arbeit/arbeit-rechnung-2025.pdf")
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // TestIsCollisionVariant (9 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_collision_exact_match() {
+        assert!(is_collision_variant(
+            "sorted/work/invoice.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_suffix_matches() {
+        assert!(is_collision_variant(
+            "sorted/work/invoice_e3ca2c9b.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_different_suffix_still_matches() {
+        assert!(is_collision_variant(
+            "sorted/work/invoice_abcd1234.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_different_filename_no_match() {
+        assert!(!is_collision_variant(
+            "sorted/work/receipt_e3ca2c9b.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_different_directory_no_match() {
+        assert!(!is_collision_variant(
+            "sorted/personal/invoice_e3ca2c9b.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_non_hex_suffix_no_match() {
+        assert!(!is_collision_variant(
+            "sorted/work/invoice_zzzzzzzz.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_wrong_length_suffix_no_match() {
+        assert!(!is_collision_variant(
+            "sorted/work/invoice_abcd12.pdf",
+            "sorted/work/invoice.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_deep_path_with_collision() {
+        assert!(is_collision_variant(
+            "sorted/belege/nain_trading/79901/belege-2025-naturescene_231x173-972_e3ca2c9b.pdf",
+            "sorted/belege/nain_trading/79901/belege-2025-naturescene_231x173-972.pdf",
+        ));
+    }
+
+    #[test]
+    fn test_collision_txt_extension() {
+        assert!(is_collision_variant(
+            "sorted/work/transcript_aabbccdd.txt",
+            "sorted/work/transcript.txt",
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestReconcileSortedCollisionVariant (6 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_collision_variant_is_complete() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/2025-01-Invoice_e3ca2c9b.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+        assert!(r.current_reference.is_none());
+    }
+
+    #[test]
+    fn test_collision_variant_with_context_folders() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.current_paths.push(PathEntry {
+            path: "sorted/arbeit/Schulze GmbH/rechnung_abcd1234.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("arbeit".to_string());
+        record.assigned_filename = Some("rechnung.pdf".to_string());
+        record.metadata = Some(json!({"context": "arbeit", "sender": "Schulze GmbH"}));
+        let folders: HashMap<String, Vec<String>> =
+            [("arbeit".to_string(), vec!["context".to_string(), "sender".to_string()])]
+                .into_iter()
+                .collect();
+
+        let result = reconcile(&mut record, None, Some(&folders), None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn test_user_rename_adopts_new_filename() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/my-custom-name.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("my-custom-name.pdf"));
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn test_user_rename_context_change() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/personal/my-custom-name.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("my-custom-name.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.context.as_deref(), Some("personal"));
+        assert_eq!(r.assigned_filename.as_deref(), Some("my-custom-name.pdf"));
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn test_user_rename_and_context_change() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/personal/renamed.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("renamed.pdf"));
+        assert_eq!(r.context.as_deref(), Some("personal"));
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn test_exact_match_still_works() {
+        let mut record = _make_record();
+        record.state = State::NeedsProcessing;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/2025-01-Invoice.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("2025-01-Invoice.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::IsComplete);
+        assert!(r.target_path.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessOutputDuplicateHash (7 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_output_hash_matches_other_source_hash() {
+        let mut r1 = _make_record();
+        r1.source_hash = "XHASH".to_string();
+        r1.state = State::IsComplete;
+
+        let mut r2 = _make_record();
+        r2.source_hash = "other".to_string();
+        r2.output_filename = Some("uuid-r2".to_string());
+        r2.state = State::NeedsProcessing;
+        r2.source_paths.push(PathEntry {
+            path: "archive/r2.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let r1_id = r1.id;
+        let r2_id = r2.id;
+        let mut records = vec![r1, r2];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-r2",
+            Some("XHASH"),
+            Some(1024),
+        );
+
+        let (modified_ids, _created) = preprocess(&[change], &mut records, &mut new_records, |_p| {
+            json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
+        });
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(modified_ids.contains(&r2_id));
+        // r2 is the second record
+        assert_eq!(records[1].state, State::HasError);
+        assert!(records[1].output_filename.is_none());
+        assert!(records[1]
+            .deleted_paths
+            .contains(&".output/uuid-r2".to_string()));
+        assert!(records[1]
+            .duplicate_sources
+            .contains(&"archive/r2.pdf".to_string()));
+        assert!(records[1].source_paths.is_empty());
+        assert!(records[1].current_paths.is_empty());
+        // r1 unchanged
+        assert_eq!(records[0].state, State::IsComplete);
+    }
+
+    #[test]
+    fn test_output_hash_matches_other_hash() {
+        let mut r1 = _make_record();
+        r1.source_hash = "src1".to_string();
+        r1.hash = Some("XHASH".to_string());
+        r1.state = State::IsComplete;
+
+        let mut r2 = _make_record();
+        r2.source_hash = "src2".to_string();
+        r2.output_filename = Some("uuid-r2".to_string());
+        r2.state = State::NeedsProcessing;
+        r2.source_paths.push(PathEntry {
+            path: "archive/r2.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let mut records = vec![r1, r2];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-r2",
+            Some("XHASH"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, |_p| {
+                json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
+            });
+
+        assert_eq!(records[1].state, State::HasError);
+        assert!(records[1]
+            .deleted_paths
+            .contains(&".output/uuid-r2".to_string()));
+        assert!(records[1]
+            .duplicate_sources
+            .contains(&"archive/r2.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_output_hash_matches_own_source_hash_only() {
+        let mut r = _make_record();
+        r.source_hash = "XHASH".to_string();
+        r.output_filename = Some("uuid-r".to_string());
+        r.state = State::NeedsProcessing;
+
+        let mut records = vec![r];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-r",
+            Some("XHASH"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, |_p| {
+                json!({"context": "work", "metadata": {"date": "2025"}, "assigned_filename": "out.pdf"})
+            });
+
+        assert_eq!(records[0].hash.as_deref(), Some("XHASH"));
+        assert_eq!(records[0].context.as_deref(), Some("work"));
+        assert_eq!(records[0].current_paths.len(), 1);
+        assert!(records[0].deleted_paths.is_empty());
+    }
+
+    #[test]
+    fn test_output_hash_no_match() {
+        let mut r = _make_record();
+        r.source_hash = "src".to_string();
+        r.output_filename = Some("uuid-r".to_string());
+        r.state = State::NeedsProcessing;
+
+        let mut records = vec![r];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-r",
+            Some("NEWHASH"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, |_p| {
+                json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
+            });
+
+        assert_eq!(records[0].hash.as_deref(), Some("NEWHASH"));
+        assert_eq!(records[0].context.as_deref(), Some("work"));
+        assert_eq!(records[0].current_paths.len(), 1);
+        assert!(records[0].deleted_paths.is_empty());
+    }
+
+    #[test]
+    fn test_output_duplicate_keeps_non_archive_sources() {
+        let mut r1 = _make_record();
+        r1.source_hash = "XHASH".to_string();
+        r1.state = State::IsComplete;
+
+        let mut r2 = _make_record();
+        r2.source_hash = "src2".to_string();
+        r2.output_filename = Some("uuid-r2".to_string());
+        r2.state = State::NeedsProcessing;
+        r2.source_paths.push(PathEntry {
+            path: "archive/r2.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        r2.source_paths.push(PathEntry {
+            path: "missing/r2.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+
+        let mut records = vec![r1, r2];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            ".output/uuid-r2",
+            Some("XHASH"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, |_p| {
+                json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
+            });
+
+        assert_eq!(records[1].state, State::HasError);
+        assert!(records[1]
+            .duplicate_sources
+            .contains(&"archive/r2.pdf".to_string()));
+        // missing/r2.pdf stays in source_paths
+        assert_eq!(records[1].source_paths.len(), 1);
+        assert_eq!(records[1].source_paths[0].path, "missing/r2.pdf");
+    }
+
+    #[test]
+    fn test_two_identical_outputs_same_cycle() {
+        let mut r1 = _make_record();
+        r1.source_hash = "src1".to_string();
+        r1.output_filename = Some("uuid-r1".to_string());
+        r1.state = State::NeedsProcessing;
+        r1.source_paths.push(PathEntry {
+            path: "archive/r1.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let mut r2 = _make_record();
+        r2.source_hash = "src2".to_string();
+        r2.output_filename = Some("uuid-r2".to_string());
+        r2.state = State::NeedsProcessing;
+        r2.source_paths.push(PathEntry {
+            path: "archive/r2.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let mut records = vec![r1, r2];
+        let mut new_records: Vec<Record> = Vec::new();
+        let c1 = _make_change(
+            EventType::Addition,
+            ".output/uuid-r1",
+            Some("IDENTICAL"),
+            Some(1024),
+        );
+        let c2 = _make_change(
+            EventType::Addition,
+            ".output/uuid-r2",
+            Some("IDENTICAL"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created) =
+            preprocess(&[c1, c2], &mut records, &mut new_records, |_p| {
+                json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
+            });
+
+        // r1: ingested normally (first in the batch)
+        assert_eq!(records[0].hash.as_deref(), Some("IDENTICAL"));
+        assert_eq!(records[0].context.as_deref(), Some("work"));
+        assert_eq!(records[0].current_paths.len(), 1);
+        assert!(records[0].deleted_paths.is_empty());
+
+        // r2: detected as duplicate (r1.hash was already set)
+        assert_eq!(records[1].state, State::HasError);
+        assert!(records[1].output_filename.is_none());
+        assert!(records[1]
+            .deleted_paths
+            .contains(&".output/uuid-r2".to_string()));
+        assert!(records[1]
+            .duplicate_sources
+            .contains(&"archive/r2.pdf".to_string()));
+        assert!(records[1].source_paths.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessIncomingMatchesHash (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_incoming_matches_record_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "SOURCE".to_string();
+            r.hash = Some("PROCESSED".to_string());
+            r.state = State::IsComplete;
+            r.current_paths.push(PathEntry {
+                path: "sorted/work/doc.pdf".to_string(),
+                timestamp: _ts(0),
+            });
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "incoming/copy.pdf",
+            Some("PROCESSED"),
+            Some(500),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(modified_ids.contains(&records[0].id));
+        // incoming matches source_hash first, but here source_hash="SOURCE" != "PROCESSED"
+        // so it matches hash="PROCESSED" -> current_paths
+        assert!(records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/copy.pdf"));
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_incoming_matches_source_hash_preferred() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "HASH1".to_string();
+            r.hash = Some("HASH1".to_string());
+            r.state = State::IsComplete;
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "incoming/doc.txt",
+            Some("HASH1"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        // Matched by source_hash (first in list for incoming) → source_paths
+        assert!(records[0]
+            .source_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/doc.txt"));
+    }
+
+    #[test]
+    fn test_incoming_hash_match_cleaned_by_reconcile() {
+        let mut record = _make_record();
+        record.source_hash = "SOURCE".to_string();
+        record.hash = Some("PROCESSED".to_string());
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: "incoming/copy.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        // incoming/ is not a valid current location → moved to deleted_paths
+        assert!(r.deleted_paths.contains(&"incoming/copy.pdf".to_string()));
+        assert!(!r
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "incoming/copy.pdf"));
+        assert_eq!(r.state, State::IsComplete);
+    }
+
+    // -----------------------------------------------------------------------
+    // TestPreprocessReset (3 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reset_matches_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.hash = Some("reset_hash".to_string());
+            r.state = State::IsComplete;
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reset/doc.pdf",
+            Some("reset_hash"),
+            Some(700),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(modified_ids.len(), 1);
+        assert!(records[0]
+            .current_paths
+            .iter()
+            .any(|pe| pe.path == "reset/doc.pdf"));
+    }
+
+    #[test]
+    fn test_reset_unknown_not_created() {
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reset/stray.pdf",
+            Some("unknown_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert!(modified_ids.is_empty());
+        assert!(created.is_empty());
+    }
+
+    #[test]
+    fn test_reset_does_not_match_source_hash() {
+        let mut records = vec![{
+            let mut r = _make_record();
+            r.source_hash = "src_hash".to_string();
+            r.hash = None;
+            r
+        }];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reset/doc.pdf",
+            Some("src_hash"),
+            Some(500),
+        );
+
+        let (modified_ids, _created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        // source_hash match is not configured for reset/
+        assert!(modified_ids.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // TestReconcileReset (8 tests)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reset_moves_to_sorted() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.metadata = Some(json!({
+            "context": "work",
+            "date": "2025-01-15",
+            "type": "Invoice",
+        }));
+        record.assigned_filename = Some("old-name.pdf".to_string());
+        record.original_filename = "original.pdf".to_string();
+
+        let recompute = |_r: &Record| -> Option<String> {
+            Some("invoice-2025-01-15.pdf".to_string())
+        };
+
+        let result = reconcile(&mut record, None, None, Some(&recompute));
+
+        let r = result.unwrap();
+        assert_eq!(
+            r.assigned_filename.as_deref(),
+            Some("invoice-2025-01-15.pdf")
+        );
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("sorted/work/invoice-2025-01-15.pdf")
+        );
+        assert_eq!(r.current_reference.as_deref(), Some("reset/doc.pdf"));
+        assert_eq!(r.state, State::IsComplete);
+    }
+
+    #[test]
+    fn test_reset_uses_context_folders() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.metadata = Some(json!({
+            "context": "work",
+            "date": "2025",
+            "sender": "Acme",
+        }));
+        record.assigned_filename = Some("old.pdf".to_string());
+
+        let recompute = |_r: &Record| -> Option<String> {
+            Some("invoice-2025.pdf".to_string())
+        };
+        let folders: HashMap<String, Vec<String>> = [(
+            "work".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let result = reconcile(&mut record, None, Some(&folders), Some(&recompute));
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("invoice-2025.pdf"));
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("sorted/work/Acme/invoice-2025.pdf")
+        );
+    }
+
+    #[test]
+    fn test_reset_without_recompute_callback() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("existing-name.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("existing-name.pdf"));
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("sorted/work/existing-name.pdf")
+        );
+        assert_eq!(r.current_reference.as_deref(), Some("reset/doc.pdf"));
+    }
+
+    #[test]
+    fn test_reset_recompute_returns_none() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("keep-this.pdf".to_string());
+
+        let recompute = |_r: &Record| -> Option<String> { None };
+
+        let result = reconcile(&mut record, None, None, Some(&recompute));
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("keep-this.pdf"));
+        assert_eq!(
+            r.target_path.as_deref(),
+            Some("sorted/work/keep-this.pdf")
+        );
+    }
+
+    #[test]
+    fn test_reset_no_context() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = None;
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let recompute = |_r: &Record| -> Option<String> { Some("new.pdf".to_string()) };
+
+        let result = reconcile(&mut record, None, None, Some(&recompute));
+
+        let r = result.unwrap();
+        assert_eq!(r.assigned_filename.as_deref(), Some("new.pdf"));
+        assert!(r.target_path.is_none());
+        assert_eq!(r.state, State::IsComplete);
+    }
+
+    #[test]
+    fn test_reset_no_assigned_filename() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = None;
+
+        let recompute = |_r: &Record| -> Option<String> { None };
+
+        let result = reconcile(&mut record, None, None, Some(&recompute));
+
+        let r = result.unwrap();
+        assert!(r.target_path.is_none());
+    }
+
+    #[test]
+    fn test_reset_deduplicates_current_paths() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "processed/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        // Dedup keeps most recent (reset/), deletes older (processed/)
+        assert_eq!(r.current_paths.len(), 1);
+        assert_eq!(r.current_paths[0].path, "reset/doc.pdf");
+        assert!(r.deleted_paths.contains(&"processed/doc.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_reset_not_cleaned_as_invalid_location() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "reset/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
+        // Should NOT be in deleted_paths
+        assert!(!r.deleted_paths.contains(&"reset/doc.pdf".to_string()));
+        assert_eq!(r.current_reference.as_deref(), Some("reset/doc.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TestReconcileContextFieldNames (1 test)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sorted_with_context_field_names_missing_fields_added() {
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.current_paths.push(PathEntry {
+            path: "sorted/work/doc.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.context = Some("work".to_string());
+        record.metadata = Some(json!({"context": "work", "date": "2025-01-01"}));
+        record.assigned_filename = Some("doc.pdf".to_string());
+
+        let cfn: HashMap<String, Vec<String>> = [(
+            "work".to_string(),
+            vec![
+                "context".to_string(),
+                "date".to_string(),
+                "category".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+
+        let result = reconcile(&mut record, Some(&cfn), None, None);
+
+        let r = result.unwrap();
+        let meta = r.metadata.as_ref().unwrap();
+        assert!(meta.get("category").is_some());
+        assert!(meta.get("category").unwrap().is_null());
+        assert_eq!(meta.get("context").unwrap().as_str(), Some("work"));
+        assert_eq!(meta.get("date").unwrap().as_str(), Some("2025-01-01"));
+    }
 }

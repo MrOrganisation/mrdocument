@@ -1654,4 +1654,325 @@ mod tests {
         fields.insert("b".to_string(), "z".to_string());
         assert!(!cond.evaluate(&fields));
     }
+
+    // --- Additional config.rs tests ---
+
+    #[test]
+    fn test_sanitize_filename_part_special_chars() {
+        assert_eq!(sanitize_filename_part("file<>name"), "file_name");
+        assert_eq!(sanitize_filename_part("a:b/c\\d"), "a_b_c_d");
+        assert_eq!(sanitize_filename_part("test?file*"), "test_file");
+    }
+
+    #[test]
+    fn test_sanitize_filename_part_empty() {
+        assert_eq!(sanitize_filename_part(""), "");
+        assert_eq!(sanitize_filename_part("___"), "");
+    }
+
+    #[test]
+    fn test_sanitize_filename_part_accented_chars() {
+        assert_eq!(sanitize_filename_part("café"), "cafe");
+        assert_eq!(sanitize_filename_part("naïve"), "naive");
+        assert_eq!(sanitize_filename_part("résumé"), "resume");
+    }
+
+    #[test]
+    fn test_format_filename_with_all_fields() {
+        let meta = serde_json::json!({
+            "context": "arbeit",
+            "date": "2025-01-15",
+            "type": "Rechnung",
+            "sender": "Schulze GmbH",
+        });
+        let result = format_filename(&meta, "{context}-{date}-{type}-{sender}", None);
+        assert_eq!(result, "arbeit-2025-01-15-rechnung-schulze_gmbh.pdf");
+    }
+
+    #[test]
+    fn test_format_filename_missing_field_omitted() {
+        let meta = serde_json::json!({"context": "work"});
+        let result = format_filename(&meta, "{context}-{date}-{type}", None);
+        // Missing fields are removed, dashes collapsed
+        assert_eq!(result, "work.pdf");
+    }
+
+    #[test]
+    fn test_format_filename_array_field() {
+        let meta = serde_json::json!({"context": "work", "keywords": ["invoice", "urgent"]});
+        let result = format_filename(&meta, "{context}-{keywords}", None);
+        assert_eq!(result, "work-invoice_urgent.pdf");
+    }
+
+    #[test]
+    fn test_format_filename_always_lowercase() {
+        let meta = serde_json::json!({"context": "Work", "type": "INVOICE"});
+        let result = format_filename(&meta, "{context}-{type}", None);
+        assert_eq!(result, "work-invoice.pdf");
+    }
+
+    #[test]
+    fn test_format_filename_source_filename_stem_only() {
+        let meta = serde_json::json!({"context": "work"});
+        let result = format_filename(&meta, "{context}-{source_filename}", Some("document.pdf"));
+        // source_filename uses the stem (no extension)
+        assert_eq!(result, "work-document.pdf");
+    }
+
+    #[test]
+    fn test_format_filename_date_not_sanitized() {
+        let meta = serde_json::json!({"date": "2025-01-15"});
+        let result = format_filename(&meta, "{date}", None);
+        // date keeps its dashes (not sanitized to underscores)
+        assert_eq!(result, "2025-01-15.pdf");
+    }
+
+    #[test]
+    fn test_smart_folder_condition_or() {
+        let cond = SmartFolderCondition::Operator {
+            op: "or".into(),
+            operands: vec![
+                SmartFolderCondition::Statement {
+                    field: "type".into(),
+                    value: "invoice".into(),
+                    compiled: Some(Regex::new("invoice").unwrap()),
+                },
+                SmartFolderCondition::Statement {
+                    field: "type".into(),
+                    value: "receipt".into(),
+                    compiled: Some(Regex::new("receipt").unwrap()),
+                },
+            ],
+        };
+        let mut fields = HashMap::new();
+        fields.insert("type".to_string(), "invoice".to_string());
+        assert!(cond.evaluate(&fields));
+
+        fields.insert("type".to_string(), "receipt".to_string());
+        assert!(cond.evaluate(&fields));
+
+        fields.insert("type".to_string(), "contract".to_string());
+        assert!(!cond.evaluate(&fields));
+    }
+
+    #[test]
+    fn test_smart_folder_condition_not() {
+        let cond = SmartFolderCondition::Operator {
+            op: "not".into(),
+            operands: vec![SmartFolderCondition::Statement {
+                field: "type".into(),
+                value: "draft".into(),
+                compiled: Some(Regex::new("draft").unwrap()),
+            }],
+        };
+        let mut fields = HashMap::new();
+        fields.insert("type".to_string(), "invoice".to_string());
+        assert!(cond.evaluate(&fields));
+
+        fields.insert("type".to_string(), "draft".to_string());
+        assert!(!cond.evaluate(&fields));
+    }
+
+    #[test]
+    fn test_smart_folder_condition_regex_case_insensitive() {
+        let cond = SmartFolderCondition::Statement {
+            field: "sender".into(),
+            value: "schulze.*".into(),
+            compiled: Some(Regex::new("schulze.*").unwrap()),
+        };
+        let mut fields = HashMap::new();
+        fields.insert("sender".to_string(), "Schulze GmbH".to_string());
+        assert!(cond.evaluate(&fields));
+    }
+
+    #[test]
+    fn test_smart_folder_condition_missing_field() {
+        let cond = SmartFolderCondition::Statement {
+            field: "nonexistent".into(),
+            value: "anything".into(),
+            compiled: Some(Regex::new("anything").unwrap()),
+        };
+        let fields = HashMap::new();
+        assert!(!cond.evaluate(&fields));
+    }
+
+    #[test]
+    fn test_smart_folder_condition_empty_and() {
+        let cond = SmartFolderCondition::Operator {
+            op: "and".into(),
+            operands: vec![],
+        };
+        let fields = HashMap::new();
+        assert!(cond.evaluate(&fields)); // empty AND = true
+    }
+
+    #[test]
+    fn test_smart_folder_condition_empty_or() {
+        let cond = SmartFolderCondition::Operator {
+            op: "or".into(),
+            operands: vec![],
+        };
+        let fields = HashMap::new();
+        assert!(!cond.evaluate(&fields)); // empty OR = false
+    }
+
+    #[test]
+    fn test_smart_folder_condition_from_dict_statement() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "field: type\nvalue: invoice",
+        )
+        .unwrap();
+        let cond = SmartFolderCondition::from_dict(&yaml, "test", "sf1").unwrap();
+        let mut fields = HashMap::new();
+        fields.insert("type".to_string(), "invoice".to_string());
+        assert!(cond.evaluate(&fields));
+    }
+
+    #[test]
+    fn test_smart_folder_condition_from_dict_operator() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "operator: or\noperands:\n  - field: type\n    value: invoice\n  - field: type\n    value: receipt",
+        )
+        .unwrap();
+        let cond = SmartFolderCondition::from_dict(&yaml, "test", "sf1").unwrap();
+        let mut fields = HashMap::new();
+        fields.insert("type".to_string(), "receipt".to_string());
+        assert!(cond.evaluate(&fields));
+    }
+
+    #[test]
+    fn test_smart_folder_config_from_dict() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "condition:\n  field: type\n  value: invoice",
+        )
+        .unwrap();
+        let config = SmartFolderConfig::from_dict("invoices", &yaml, "work").unwrap();
+        assert_eq!(config.name, "invoices");
+        assert!(config.condition.is_some());
+        assert!(config.filename_regex.is_none());
+    }
+
+    #[test]
+    fn test_smart_folder_config_filename_regex() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "filename_regex: '.*\\.pdf$'\ncondition:\n  field: type\n  value: invoice",
+        )
+        .unwrap();
+        let config = SmartFolderConfig::from_dict("pdf_only", &yaml, "work").unwrap();
+        assert!(config.matches_filename("document.pdf"));
+        assert!(!config.matches_filename("document.txt"));
+    }
+
+    #[test]
+    fn test_smart_folder_config_no_condition_or_regex_fails() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str("description: test").unwrap();
+        let config = SmartFolderConfig::from_dict("empty", &yaml, "work");
+        assert!(config.is_none());
+    }
+
+    #[test]
+    fn test_smart_folder_config_matches_filename_no_regex() {
+        let config = SmartFolderConfig {
+            name: "test".into(),
+            condition: None,
+            filename_regex: None,
+            compiled_filename_regex: None,
+        };
+        assert!(config.matches_filename("anything.pdf"));
+        assert!(config.matches_filename("anything.txt"));
+    }
+
+    #[test]
+    fn test_context_config_resolve_filename_pattern_default() {
+        let ctx = ContextConfig {
+            name: "work".into(),
+            filename_pattern: "{context}-{date}".into(),
+            folders: vec![],
+            smart_folders: HashMap::new(),
+            field_names: vec![],
+            filename_rules: vec![],
+        };
+        assert_eq!(
+            ctx.resolve_filename_pattern(Some("doc.pdf")),
+            "{context}-{date}"
+        );
+    }
+
+    #[test]
+    fn test_context_config_resolve_filename_pattern_conditional() {
+        let ctx = ContextConfig {
+            name: "work".into(),
+            filename_pattern: "{context}-{date}".into(),
+            folders: vec![],
+            smart_folders: HashMap::new(),
+            field_names: vec![],
+            filename_rules: vec![
+                FilenameRule {
+                    pattern: "{context}-audio-{date}".into(),
+                    match_regex: Some(r"(?i)\.(mp3|flac|wav)$".into()),
+                },
+                FilenameRule {
+                    pattern: "{context}-{date}".into(),
+                    match_regex: None, // default
+                },
+            ],
+        };
+        // Audio file matches first rule
+        assert_eq!(
+            ctx.resolve_filename_pattern(Some("recording.mp3")),
+            "{context}-audio-{date}"
+        );
+        // PDF doesn't match audio rule, falls through to default
+        assert_eq!(
+            ctx.resolve_filename_pattern(Some("document.pdf")),
+            "{context}-{date}"
+        );
+    }
+
+    #[test]
+    fn test_context_config_resolve_no_source_filename() {
+        let ctx = ContextConfig {
+            name: "work".into(),
+            filename_pattern: "{context}-{date}".into(),
+            folders: vec![],
+            smart_folders: HashMap::new(),
+            field_names: vec![],
+            filename_rules: vec![FilenameRule {
+                pattern: "special".into(),
+                match_regex: Some(".*".into()),
+            }],
+        };
+        // No source_filename → always returns default pattern
+        assert_eq!(ctx.resolve_filename_pattern(None), "{context}-{date}");
+    }
+
+    #[test]
+    fn test_context_config_from_dict() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "name: arbeit\nfilename: \"{context}-{date}-{type}\"\nfields:\n  type: {}\n  sender: {}\nfolders:\n  - context\n  - sender",
+        )
+        .unwrap();
+        let ctx = ContextConfig::from_dict(&yaml).unwrap();
+        assert_eq!(ctx.name, "arbeit");
+        assert_eq!(ctx.filename_pattern, "{context}-{date}-{type}");
+        assert_eq!(ctx.folders, vec!["context", "sender"]);
+        // field_names always starts with context, date
+        assert!(ctx.field_names.contains(&"context".to_string()));
+        assert!(ctx.field_names.contains(&"date".to_string()));
+        assert!(ctx.field_names.contains(&"type".to_string()));
+        assert!(ctx.field_names.contains(&"sender".to_string()));
+    }
+
+    #[test]
+    fn test_context_config_conditional_filename() {
+        let yaml: serde_yaml::Value = serde_yaml::from_str(
+            "name: work\nfilename:\n  - pattern: \"{context}-audio-{date}\"\n    match: \"(?i)\\\\.(mp3|wav)$\"\n  - pattern: \"{context}-{date}\"",
+        )
+        .unwrap();
+        let ctx = ContextConfig::from_dict(&yaml).unwrap();
+        assert_eq!(ctx.filename_rules.len(), 2);
+        assert!(ctx.filename_rules[0].match_regex.is_some());
+        assert!(ctx.filename_rules[1].match_regex.is_none());
+        assert_eq!(ctx.filename_pattern, "{context}-{date}"); // default
+    }
 }

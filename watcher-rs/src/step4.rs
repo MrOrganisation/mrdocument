@@ -246,3 +246,507 @@ impl FilesystemReconciler {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PathEntry, Record, State};
+    use chrono::Utc;
+    use std::fs;
+    use tempfile::TempDir;
+
+    fn make_record(filename: &str, hash: &str) -> Record {
+        let mut r = Record::new(filename.into(), hash.into());
+        r.state = State::IsComplete;
+        r
+    }
+
+    // -----------------------------------------------------------------------
+    // move_file tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_move_file_basic() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("source.pdf");
+        let dest = tmp.path().join("dest.pdf");
+        fs::write(&src, b"hello").unwrap();
+
+        let result = move_file(&src, &dest);
+        assert_eq!(result, Some(dest.clone()));
+        assert!(!src.exists());
+        assert!(dest.exists());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "hello");
+    }
+
+    #[test]
+    fn test_move_file_creates_parent_dirs() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("source.pdf");
+        let dest = tmp.path().join("a/b/c/dest.pdf");
+        fs::write(&src, b"content").unwrap();
+
+        let result = move_file(&src, &dest);
+        assert_eq!(result, Some(dest.clone()));
+        assert!(dest.exists());
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "content");
+    }
+
+    #[test]
+    fn test_move_file_collision() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("source.pdf");
+        let dest = tmp.path().join("dest.pdf");
+        fs::write(&src, b"new").unwrap();
+        fs::write(&dest, b"existing").unwrap();
+
+        let result = move_file(&src, &dest);
+        assert!(result.is_some());
+        let actual = result.unwrap();
+        // Should not be the original dest (collision avoidance)
+        assert_ne!(actual, dest);
+        // Should be in the same directory with a UUID suffix
+        assert_eq!(actual.parent(), dest.parent());
+        // Original should still exist with its content
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "existing");
+        // Moved file should have new content
+        assert_eq!(fs::read_to_string(&actual).unwrap(), "new");
+        // The filename should contain the original stem and extension
+        let name = actual.file_name().unwrap().to_str().unwrap();
+        assert!(name.starts_with("dest_"));
+        assert!(name.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn test_move_file_source_missing() {
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("nonexistent.pdf");
+        let dest = tmp.path().join("dest.pdf");
+
+        let result = move_file(&src, &dest);
+        assert_eq!(result, None);
+    }
+
+    // -----------------------------------------------------------------------
+    // void_dest tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_void_dest_simple() {
+        let tmp = TempDir::new().unwrap();
+        let result = void_dest(tmp.path(), "archive/file.pdf");
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let expected = tmp.path().join("void").join(&today).join("archive").join("file.pdf");
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_void_dest_with_location_path() {
+        let tmp = TempDir::new().unwrap();
+        let result = void_dest(tmp.path(), "sorted/work/file.pdf");
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        let expected = tmp.path().join("void").join(&today).join("sorted").join("work").join("file.pdf");
+        assert_eq!(result, expected);
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemReconciler: source_reference tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_source_reference_to_archive() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/test.pdf"), b"data").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.source_reference = Some("inbox/test.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join("inbox/test.pdf").exists());
+        assert!(root.join("archive/test.pdf").exists());
+        // source_paths should be updated
+        assert_eq!(records[0].source_paths[0].path, "archive/test.pdf");
+    }
+
+    #[test]
+    fn test_source_reference_to_error() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/test.pdf"), b"data").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.state = State::HasError;
+        r.source_reference = Some("inbox/test.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join("inbox/test.pdf").exists());
+        assert!(root.join("error/test.pdf").exists());
+    }
+
+    #[test]
+    fn test_source_reference_to_missing() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/test.pdf"), b"data").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.state = State::IsMissing;
+        r.source_reference = Some("inbox/test.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join("inbox/test.pdf").exists());
+        assert!(root.join("missing/test.pdf").exists());
+    }
+
+    #[test]
+    fn test_source_reference_updates_source_paths() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/doc.pdf"), b"data").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("doc.pdf", "hash1");
+        r.source_reference = Some("inbox/doc.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/doc.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert_eq!(records[0].source_paths.len(), 1);
+        assert_eq!(records[0].source_paths[0].path, "archive/doc.pdf");
+        // Old path should be in missing_source_paths
+        assert_eq!(records[0].missing_source_paths.len(), 1);
+        assert_eq!(records[0].missing_source_paths[0].path, "inbox/doc.pdf");
+    }
+
+    #[test]
+    fn test_source_reference_collision() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("inbox/test.pdf"), b"new").unwrap();
+        fs::write(root.join("archive/test.pdf"), b"existing").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.source_reference = Some("inbox/test.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        // Original archive file should still exist
+        assert!(root.join("archive/test.pdf").exists());
+        // Source file should be gone from inbox
+        assert!(!root.join("inbox/test.pdf").exists());
+        // source_paths should have a collision-suffixed path
+        let new_path = &records[0].source_paths[0].path;
+        assert!(new_path.starts_with("archive/test_"));
+        assert!(new_path.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn test_source_reference_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        // Don't create the source file -- it's gone
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.source_reference = Some("inbox/test.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        // source_paths should be emptied, moved to missing_source_paths
+        assert!(records[0].source_paths.is_empty());
+        assert_eq!(records[0].missing_source_paths.len(), 1);
+        assert_eq!(records[0].missing_source_paths[0].path, "inbox/test.pdf");
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemReconciler: duplicate_sources tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_duplicate_sources_moved() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/dup.pdf"), b"duplicate").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.duplicate_sources = vec!["inbox/dup.pdf".into()];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join("inbox/dup.pdf").exists());
+        assert!(root.join("duplicates/inbox/dup.pdf").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemReconciler: current_reference + target_path tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_current_reference_target_path_move() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join(".output")).unwrap();
+        fs::write(root.join(".output/uuid123"), b"processed").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.current_reference = Some(".output/uuid123".into());
+        r.target_path = Some("sorted/work/test.pdf".into());
+        r.current_paths = vec![PathEntry {
+            path: ".output/uuid123".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join(".output/uuid123").exists());
+        assert!(root.join("sorted/work/test.pdf").exists());
+        assert_eq!(
+            fs::read_to_string(root.join("sorted/work/test.pdf")).unwrap(),
+            "processed"
+        );
+    }
+
+    #[test]
+    fn test_current_reference_updates_current_paths() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join(".output")).unwrap();
+        fs::write(root.join(".output/uuid123"), b"data").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.current_reference = Some(".output/uuid123".into());
+        r.target_path = Some("sorted/work/result.pdf".into());
+        r.current_paths = vec![PathEntry {
+            path: ".output/uuid123".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert_eq!(records[0].current_paths.len(), 1);
+        assert_eq!(records[0].current_paths[0].path, "sorted/work/result.pdf");
+    }
+
+    #[test]
+    fn test_current_reference_collision() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join(".output")).unwrap();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join(".output/uuid123"), b"new").unwrap();
+        fs::write(root.join("sorted/work/test.pdf"), b"existing").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.current_reference = Some(".output/uuid123".into());
+        r.target_path = Some("sorted/work/test.pdf".into());
+        r.current_paths = vec![PathEntry {
+            path: ".output/uuid123".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        // Original should still exist
+        assert_eq!(
+            fs::read_to_string(root.join("sorted/work/test.pdf")).unwrap(),
+            "existing"
+        );
+        // current_paths should have collision-suffixed path
+        let new_path = &records[0].current_paths[0].path;
+        assert!(new_path.starts_with("sorted/work/test_"));
+        assert!(new_path.ends_with(".pdf"));
+    }
+
+    #[test]
+    fn test_current_reference_missing_file() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        // Don't create the current file -- it's gone
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.current_reference = Some(".output/uuid123".into());
+        r.target_path = Some("sorted/work/test.pdf".into());
+        r.current_paths = vec![PathEntry {
+            path: ".output/uuid123".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(records[0].current_paths.is_empty());
+        assert_eq!(records[0].missing_current_paths.len(), 1);
+        assert_eq!(records[0].missing_current_paths[0].path, ".output/uuid123");
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemReconciler: deleted_paths tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_deleted_paths_to_void() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/old.pdf"), b"old").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("old.pdf", "hash1");
+        r.deleted_paths = vec!["sorted/work/old.pdf".into()];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join("sorted/work/old.pdf").exists());
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        assert!(root.join("void").join(&today).join("sorted/work/old.pdf").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemReconciler: needs_deletion tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_needs_deletion_all_to_void() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("archive/test.pdf"), b"source").unwrap();
+        fs::write(root.join("sorted/work/test.pdf"), b"current").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("test.pdf", "hash1");
+        r.state = State::NeedsDeletion;
+        r.source_paths = vec![PathEntry {
+            path: "archive/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_paths = vec![PathEntry {
+            path: "sorted/work/test.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        assert!(!root.join("archive/test.pdf").exists());
+        assert!(!root.join("sorted/work/test.pdf").exists());
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        assert!(root.join("void").join(&today).join("archive/test.pdf").exists());
+        assert!(root.join("void").join(&today).join("sorted/work/test.pdf").exists());
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemReconciler: multiple operations in one record
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_multiple_operations_in_one_record() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Set up source file in inbox
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/doc.pdf"), b"source").unwrap();
+
+        // Set up current file in .output
+        fs::create_dir_all(root.join(".output")).unwrap();
+        fs::write(root.join(".output/uuid456"), b"processed").unwrap();
+
+        // Set up duplicate in inbox
+        fs::create_dir_all(root.join("inbox/sub")).unwrap();
+        fs::write(root.join("inbox/sub/dup.pdf"), b"dup").unwrap();
+
+        // Set up file to delete
+        fs::create_dir_all(root.join("sorted/old")).unwrap();
+        fs::write(root.join("sorted/old/stale.pdf"), b"stale").unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("doc.pdf", "hash1");
+        r.source_reference = Some("inbox/doc.pdf".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/doc.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_reference = Some(".output/uuid456".into());
+        r.target_path = Some("sorted/work/doc.pdf".into());
+        r.current_paths = vec![PathEntry {
+            path: ".output/uuid456".into(),
+            timestamp: Utc::now(),
+        }];
+        r.duplicate_sources = vec!["inbox/sub/dup.pdf".into()];
+        r.deleted_paths = vec!["sorted/old/stale.pdf".into()];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        // Source moved to archive
+        assert!(root.join("archive/doc.pdf").exists());
+        assert!(!root.join("inbox/doc.pdf").exists());
+
+        // Current moved to sorted
+        assert!(root.join("sorted/work/doc.pdf").exists());
+        assert!(!root.join(".output/uuid456").exists());
+
+        // Duplicate moved
+        assert!(root.join("duplicates/inbox/sub/dup.pdf").exists());
+
+        // Deleted moved to void
+        let today = Utc::now().format("%Y-%m-%d").to_string();
+        assert!(root.join("void").join(&today).join("sorted/old/stale.pdf").exists());
+    }
+}

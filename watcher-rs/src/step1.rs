@@ -664,3 +664,428 @@ fn walk_recursive(dir: &Path) -> Vec<PathBuf> {
     }
     results
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    /// Create all watched directories inside the given root.
+    fn setup_dirs(root: &Path) {
+        for d in &[
+            "archive",
+            "incoming",
+            "reviewed",
+            "processed",
+            "reset",
+            "trash",
+            ".output",
+            "sorted",
+        ] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+    }
+
+    /// Helper to create a Record with source_paths and optional hash/output_filename.
+    fn make_record(
+        source_hash: &str,
+        source_paths: &[&str],
+        current_paths: &[&str],
+        hash: Option<&str>,
+        output_filename: Option<&str>,
+    ) -> Record {
+        let ts = chrono::Utc::now();
+        let mut rec = Record::new("test.pdf".into(), source_hash.to_string());
+        for p in source_paths {
+            rec.source_paths.push(crate::models::PathEntry {
+                path: p.to_string(),
+                timestamp: ts,
+            });
+        }
+        for p in current_paths {
+            rec.current_paths.push(crate::models::PathEntry {
+                path: p.to_string(),
+                timestamp: ts,
+            });
+        }
+        rec.hash = hash.map(|h| h.to_string());
+        rec.output_filename = output_filename.map(|o| o.to_string());
+        rec
+    }
+
+    // -----------------------------------------------------------------------
+    // Helper function tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_compute_sha256() {
+        let dir = TempDir::new().unwrap();
+        let file_path = dir.path().join("test.txt");
+        fs::write(&file_path, b"hello world").unwrap();
+        let hash = compute_sha256(&file_path).unwrap();
+        // SHA-256 of "hello world"
+        assert_eq!(
+            hash,
+            "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9"
+        );
+        // Verify it's a 64-char hex string
+        assert_eq!(hash.len(), 64);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_is_config_file_positive() {
+        assert!(is_config_file("sorted/work/context.yaml"));
+        assert!(is_config_file("sorted/work/smartfolders.yaml"));
+        assert!(is_config_file("sorted/work/generated.yaml"));
+    }
+
+    #[test]
+    fn test_is_config_file_negative() {
+        assert!(!is_config_file("sorted/work/data.yaml"));
+        assert!(!is_config_file("sorted/work/readme.md"));
+    }
+
+    #[test]
+    fn test_is_config_file_wrong_depth() {
+        // Only 2 parts -- missing context dir level
+        assert!(!is_config_file("sorted/context.yaml"));
+        // 4 parts -- too deep
+        assert!(!is_config_file("sorted/work/sub/context.yaml"));
+    }
+
+    #[test]
+    fn test_is_ignored_hidden() {
+        assert!(is_ignored(".hidden"));
+        assert!(is_ignored(".DS_Store"));
+    }
+
+    #[test]
+    fn test_is_ignored_tilde() {
+        assert!(is_ignored("~tempfile"));
+        assert!(is_ignored("~lock.file"));
+    }
+
+    #[test]
+    fn test_is_ignored_syncthing() {
+        assert!(is_ignored(".syncthing.file.tmp"));
+        assert!(is_ignored("~syncthing~file"));
+    }
+
+    #[test]
+    fn test_is_ignored_tmp() {
+        assert!(is_ignored("file.tmp"));
+        assert!(is_ignored("document.tmp"));
+    }
+
+    #[test]
+    fn test_is_ignored_normal() {
+        assert!(!is_ignored("document.pdf"));
+        assert!(!is_ignored("photo.jpg"));
+        assert!(!is_ignored("report.docx"));
+    }
+
+    #[test]
+    fn test_get_location() {
+        assert_eq!(get_location("archive/file.pdf"), "archive");
+        assert_eq!(get_location("incoming/doc.pdf"), "incoming");
+        assert_eq!(get_location(".output/uuid"), ".output");
+    }
+
+    #[test]
+    fn test_get_location_nested() {
+        assert_eq!(get_location("sorted/work/file.pdf"), "sorted");
+        assert_eq!(get_location("sorted/work/sub/file.pdf"), "sorted");
+    }
+
+    #[test]
+    fn test_has_supported_extension_pdf() {
+        assert!(has_supported_extension(Path::new("document.pdf")));
+        assert!(has_supported_extension(Path::new("document.PDF")));
+    }
+
+    #[test]
+    fn test_has_supported_extension_mp3() {
+        assert!(has_supported_extension(Path::new("audio.mp3")));
+        assert!(has_supported_extension(Path::new("audio.MP3")));
+    }
+
+    #[test]
+    fn test_has_supported_extension_unsupported() {
+        assert!(!has_supported_extension(Path::new("font.ttf")));
+        assert!(!has_supported_extension(Path::new("data.csv")));
+    }
+
+    #[test]
+    fn test_has_supported_extension_no_ext() {
+        // Files with no extension pass through (are allowed)
+        assert!(has_supported_extension(Path::new("Makefile")));
+        assert!(has_supported_extension(Path::new("README")));
+    }
+
+    // -----------------------------------------------------------------------
+    // FilesystemDetector::scan tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scan_finds_files() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        // Create test files
+        fs::write(root.join("incoming/doc.pdf"), b"pdf content").unwrap();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/report.pdf"), b"report").unwrap();
+
+        let detector = FilesystemDetector::new(root.to_path_buf());
+        let result = detector.scan();
+
+        assert!(result.contains_key("incoming/doc.pdf"));
+        assert!(result.contains_key("sorted/work/report.pdf"));
+    }
+
+    #[test]
+    fn test_scan_ignores_hidden() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        fs::write(root.join("incoming/.hidden"), b"secret").unwrap();
+        fs::write(root.join("incoming/visible.pdf"), b"visible").unwrap();
+
+        let detector = FilesystemDetector::new(root.to_path_buf());
+        let result = detector.scan();
+
+        assert!(!result.contains_key("incoming/.hidden"));
+        assert!(result.contains_key("incoming/visible.pdf"));
+    }
+
+    #[test]
+    fn test_scan_ignores_symlinks() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        let target = root.join("incoming/real.pdf");
+        fs::write(&target, b"real content").unwrap();
+
+        let link = root.join("incoming/link.pdf");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        let detector = FilesystemDetector::new(root.to_path_buf());
+        let result = detector.scan();
+
+        assert!(result.contains_key("incoming/real.pdf"));
+        // Symlinks should be skipped
+        #[cfg(unix)]
+        assert!(!result.contains_key("incoming/link.pdf"));
+    }
+
+    #[test]
+    fn test_scan_recursive_sorted() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/deep.pdf"), b"deep content").unwrap();
+
+        let detector = FilesystemDetector::new(root.to_path_buf());
+        let result = detector.scan();
+
+        assert!(result.contains_key("sorted/work/deep.pdf"));
+    }
+
+    #[test]
+    fn test_scan_skips_config_files() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/context.yaml"), b"config: true").unwrap();
+        fs::write(root.join("sorted/work/smartfolders.yaml"), b"sf: true").unwrap();
+        fs::write(root.join("sorted/work/generated.yaml"), b"gen: true").unwrap();
+        fs::write(root.join("sorted/work/document.pdf"), b"document").unwrap();
+
+        let detector = FilesystemDetector::new(root.to_path_buf());
+        let result = detector.scan();
+
+        assert!(!result.contains_key("sorted/work/context.yaml"));
+        assert!(!result.contains_key("sorted/work/smartfolders.yaml"));
+        assert!(!result.contains_key("sorted/work/generated.yaml"));
+        assert!(result.contains_key("sorted/work/document.pdf"));
+    }
+
+    // -----------------------------------------------------------------------
+    // detect (full) tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_detect_full_initial_additions() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        fs::write(root.join("incoming/a.pdf"), b"aaa").unwrap();
+        fs::write(root.join("incoming/b.pdf"), b"bbb").unwrap();
+
+        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let changes = detector.detect(&[]).await;
+
+        // Both files should be reported as additions
+        let additions: Vec<_> = changes
+            .iter()
+            .filter(|c| c.event_type == EventType::Addition)
+            .collect();
+        assert_eq!(additions.len(), 2);
+
+        let paths: Vec<&str> = additions.iter().map(|c| c.path.as_str()).collect();
+        assert!(paths.contains(&"incoming/a.pdf"));
+        assert!(paths.contains(&"incoming/b.pdf"));
+
+        // Each should have a hash and size
+        for a in &additions {
+            assert!(a.hash.is_some());
+            assert!(a.size.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_detect_full_with_existing_records() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        let content = b"known content";
+        fs::write(root.join("incoming/known.pdf"), content).unwrap();
+
+        // Compute hash of the file
+        let file_hash = compute_sha256(&root.join("incoming/known.pdf")).unwrap();
+
+        // Create a DB record that matches this file
+        let record = make_record(
+            &file_hash,
+            &["incoming/known.pdf"],
+            &[],
+            None,
+            None,
+        );
+
+        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let changes = detector.detect(&[record]).await;
+
+        // The known file should NOT be re-reported as addition
+        let additions: Vec<_> = changes
+            .iter()
+            .filter(|c| c.event_type == EventType::Addition)
+            .collect();
+        assert!(
+            additions.is_empty(),
+            "Known files should not be reported as additions"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_detect_full_removal_for_missing() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        // Create a DB record referencing a file that does NOT exist on disk
+        let record = make_record(
+            "somehash",
+            &["incoming/gone.pdf"],
+            &[],
+            None,
+            None,
+        );
+
+        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let changes = detector.detect(&[record]).await;
+
+        let removals: Vec<_> = changes
+            .iter()
+            .filter(|c| c.event_type == EventType::Removal)
+            .collect();
+        assert_eq!(removals.len(), 1);
+        assert_eq!(removals[0].path, "incoming/gone.pdf");
+        assert!(removals[0].hash.is_none());
+        assert!(removals[0].size.is_none());
+    }
+
+    // -----------------------------------------------------------------------
+    // is_known tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_known_by_source_hash() {
+        let record = make_record("abc123", &["incoming/doc.pdf"], &[], None, None);
+        assert!(FilesystemDetector::is_known(
+            "abc123",
+            "incoming/doc.pdf",
+            &[record]
+        ));
+    }
+
+    #[test]
+    fn test_is_known_by_hash() {
+        let record = make_record(
+            "source_hash",
+            &["incoming/doc.pdf"],
+            &[],
+            Some("processed_hash"),
+            None,
+        );
+        assert!(FilesystemDetector::is_known(
+            "processed_hash",
+            "incoming/other.pdf",
+            &[record]
+        ));
+    }
+
+    #[test]
+    fn test_is_known_output_by_filename() {
+        let record = make_record(
+            "src",
+            &["incoming/doc.pdf"],
+            &[],
+            None,
+            Some("uuid-output"),
+        );
+        assert!(FilesystemDetector::is_known(
+            "anyhash",
+            ".output/uuid-output",
+            &[record]
+        ));
+    }
+
+    #[test]
+    fn test_is_known_output_sidecar() {
+        let record = make_record(
+            "src",
+            &["incoming/doc.pdf"],
+            &[],
+            None,
+            Some("uuid-output"),
+        );
+        // Sidecar .meta.json files should be recognized as known
+        assert!(FilesystemDetector::is_known(
+            "anyhash",
+            ".output/uuid-output.meta.json",
+            &[record]
+        ));
+    }
+
+    #[test]
+    fn test_is_known_unknown() {
+        let record = make_record("abc", &["incoming/doc.pdf"], &[], None, None);
+        assert!(!FilesystemDetector::is_known(
+            "completely_different_hash",
+            "incoming/unknown.pdf",
+            &[record]
+        ));
+    }
+}

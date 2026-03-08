@@ -260,3 +260,358 @@ fn compute_relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
 
     result
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PathEntry, Record, State};
+    use chrono::Utc;
+    use std::fs;
+    use std::os::unix::fs as unix_fs;
+    use tempfile::TempDir;
+
+    /// Create the standard test setup: an audio file in archive/ and a transcript in sorted/.
+    fn setup_audio_record(root: &Path, ctx: &str) -> Record {
+        // Create archive source audio
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/recording.mp3"), b"audio data").unwrap();
+
+        // Create transcript in sorted/
+        let sorted_ctx = root.join("sorted").join(ctx);
+        fs::create_dir_all(&sorted_ctx).unwrap();
+        fs::write(sorted_ctx.join("recording.txt"), b"transcript text").unwrap();
+
+        // Build record
+        let mut r = Record::new("recording.mp3".into(), "hash123".into());
+        r.state = State::IsComplete;
+        r.context = Some(ctx.into());
+        r.source_paths = vec![PathEntry {
+            path: "archive/recording.mp3".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_paths = vec![PathEntry {
+            path: format!("sorted/{}/recording.txt", ctx),
+            timestamp: Utc::now(),
+        }];
+        r
+    }
+
+    // -----------------------------------------------------------------------
+    // Core functionality
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_creates_audio_link() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let r = setup_audio_record(&root, "work");
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/recording.mp3");
+        assert!(link_path.exists(), "Audio link should exist");
+        assert!(is_symlink(&link_path), "Should be a symlink");
+        // Verify the symlink resolves to the archive file
+        let resolved = link_path.canonicalize().unwrap();
+        let expected = root.join("archive/recording.mp3").canonicalize().unwrap();
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn test_no_link_if_not_audio_origin() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create a record with a PDF original (not audio)
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/document.pdf"), b"pdf").unwrap();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/document.pdf"), b"sorted pdf").unwrap();
+
+        let mut r = Record::new("document.pdf".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = Some("work".into());
+        r.source_paths = vec![PathEntry {
+            path: "archive/document.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_paths = vec![PathEntry {
+            path: "sorted/work/document.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        // No extra symlinks should exist in the sorted folder
+        let entries: Vec<_> = fs::read_dir(root.join("sorted/work"))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(entries.len(), 1, "Only the original PDF should exist");
+    }
+
+    #[test]
+    fn test_no_link_if_not_complete() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let mut r = setup_audio_record(&root, "work");
+        r.state = State::NeedsProcessing;
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/recording.mp3");
+        assert!(!link_path.exists(), "Should not create link for non-complete record");
+    }
+
+    #[test]
+    fn test_no_link_if_source_not_archive() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Source in inbox instead of archive
+        fs::create_dir_all(root.join("inbox")).unwrap();
+        fs::write(root.join("inbox/recording.mp3"), b"audio").unwrap();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/recording.txt"), b"transcript").unwrap();
+
+        let mut r = Record::new("recording.mp3".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = Some("work".into());
+        r.source_paths = vec![PathEntry {
+            path: "inbox/recording.mp3".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_paths = vec![PathEntry {
+            path: "sorted/work/recording.txt".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/recording.mp3");
+        assert!(!link_path.exists(), "Should not create link if source not in archive");
+    }
+
+    #[test]
+    fn test_collision_avoidance() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let r = setup_audio_record(&root, "work");
+
+        // Place a real file where the symlink would go
+        fs::write(root.join("sorted/work/recording.mp3"), b"real file").unwrap();
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        // The real file should not be overwritten
+        let link_path = root.join("sorted/work/recording.mp3");
+        assert!(!is_symlink(&link_path), "Should not replace a real file with symlink");
+        assert_eq!(
+            fs::read_to_string(&link_path).unwrap(),
+            "real file",
+        );
+    }
+
+    #[test]
+    fn test_cleanup_orphans_removes_stale() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create archive file and a symlink pointing to it
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/old_recording.mp3"), b"audio").unwrap();
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+
+        let link_path = root.join("sorted/work/old_recording.mp3");
+        let relative_target = compute_relative_path(
+            root.join("sorted/work").as_path(),
+            &root.join("archive/old_recording.mp3"),
+        );
+        unix_fs::symlink(&relative_target, &link_path).unwrap();
+        assert!(is_symlink(&link_path));
+
+        // Reconcile with empty records -- no expected links
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[]);
+        reconciler.cleanup_orphans();
+
+        // The orphaned symlink pointing into archive/ should be removed
+        assert!(!link_path.exists(), "Orphaned audio link should be cleaned up");
+    }
+
+    #[test]
+    fn test_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        let r = setup_audio_record(&root, "work");
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+
+        // Run twice
+        reconciler.reconcile(&[r.clone()]);
+        let link_path = root.join("sorted/work/recording.mp3");
+        assert!(is_symlink(&link_path));
+        let target_first = fs::read_link(&link_path).unwrap();
+
+        reconciler.reconcile(&[r]);
+        assert!(is_symlink(&link_path));
+        let target_second = fs::read_link(&link_path).unwrap();
+
+        // Should be identical -- no duplication
+        assert_eq!(target_first, target_second);
+
+        // Count symlinks in sorted/work -- should be exactly one audio link + one real file
+        let symlinks: Vec<_> = fs::read_dir(root.join("sorted/work"))
+            .unwrap()
+            .flatten()
+            .filter(|e| is_symlink(&e.path()))
+            .collect();
+        assert_eq!(symlinks.len(), 1, "Should have exactly one audio link symlink");
+    }
+
+    #[test]
+    fn test_link_in_processed_dir() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create archive source audio
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/recording.wav"), b"audio").unwrap();
+
+        // Create transcript in processed/ instead of sorted/
+        fs::create_dir_all(root.join("processed/work")).unwrap();
+        fs::write(root.join("processed/work/recording.txt"), b"transcript").unwrap();
+
+        let mut r = Record::new("recording.wav".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = Some("work".into());
+        r.source_paths = vec![PathEntry {
+            path: "archive/recording.wav".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_paths = vec![PathEntry {
+            path: "processed/work/recording.txt".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("processed/work/recording.wav");
+        assert!(link_path.exists(), "Audio link should exist in processed/");
+        assert!(is_symlink(&link_path));
+        let resolved = link_path.canonicalize().unwrap();
+        let expected = root.join("archive/recording.wav").canonicalize().unwrap();
+        assert_eq!(resolved, expected);
+    }
+
+    #[test]
+    fn test_rename_updates_link() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create archive source audio
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/recording.mp3"), b"audio").unwrap();
+
+        // Create transcript
+        fs::create_dir_all(root.join("sorted/work")).unwrap();
+        fs::write(root.join("sorted/work/recording.txt"), b"transcript").unwrap();
+
+        let mut r = Record::new("recording.mp3".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = Some("work".into());
+        r.source_paths = vec![PathEntry {
+            path: "archive/recording.mp3".into(),
+            timestamp: Utc::now(),
+        }];
+        r.current_paths = vec![PathEntry {
+            path: "sorted/work/recording.txt".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        let link_path = root.join("sorted/work/recording.mp3");
+        assert!(is_symlink(&link_path));
+
+        // Now simulate a rename: transcript moved, create new file at new location
+        fs::write(root.join("sorted/work/meeting_notes.txt"), b"renamed transcript").unwrap();
+        // Remove old transcript
+        fs::remove_file(root.join("sorted/work/recording.txt")).unwrap();
+
+        let mut r2 = Record::new("recording.mp3".into(), "hash".into());
+        r2.state = State::IsComplete;
+        r2.context = Some("work".into());
+        r2.source_paths = vec![PathEntry {
+            path: "archive/recording.mp3".into(),
+            timestamp: Utc::now(),
+        }];
+        r2.current_paths = vec![PathEntry {
+            path: "sorted/work/meeting_notes.txt".into(),
+            timestamp: Utc::now(),
+        }];
+
+        reconciler.reconcile(&[r2]);
+
+        // New link should exist
+        let new_link = root.join("sorted/work/meeting_notes.mp3");
+        assert!(is_symlink(&new_link), "New audio link should exist after rename");
+
+        // Old link is now orphaned -- cleanup should remove it
+        reconciler.cleanup_orphans();
+        assert!(!root.join("sorted/work/recording.mp3").exists(),
+                "Old audio link should be cleaned up after rename");
+    }
+
+    #[test]
+    fn test_no_link_if_no_current() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create archive source audio but no current file
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::write(root.join("archive/recording.mp3"), b"audio").unwrap();
+
+        let mut r = Record::new("recording.mp3".into(), "hash".into());
+        r.state = State::IsComplete;
+        r.context = Some("work".into());
+        r.source_paths = vec![PathEntry {
+            path: "archive/recording.mp3".into(),
+            timestamp: Utc::now(),
+        }];
+        // No current_paths
+
+        let mut reconciler = AudioLinkReconciler::new(root.clone());
+        reconciler.reconcile(&[r]);
+
+        // No symlinks should be created anywhere
+        assert!(!root.join("sorted").exists() || {
+            let count = walkdir_symlink_count(&root.join("sorted"));
+            count == 0
+        });
+    }
+
+    /// Helper: count symlinks recursively in a directory.
+    fn walkdir_symlink_count(dir: &Path) -> usize {
+        if !dir.exists() {
+            return 0;
+        }
+        let mut count = 0;
+        for entry in fs::read_dir(dir).unwrap().flatten() {
+            let p = entry.path();
+            if is_symlink(&p) {
+                count += 1;
+            } else if p.is_dir() {
+                count += walkdir_symlink_count(&p);
+            }
+        }
+        count
+    }
+}

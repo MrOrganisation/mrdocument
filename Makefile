@@ -1,6 +1,6 @@
 .PHONY: build up down \
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
-       test test-unit test-integration test-integration-syncthing test-contexts \
+       test test-unit test-unit-rust test-integration test-integration-syncthing test-contexts \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
        dump-db
 
@@ -43,15 +43,19 @@ down:
 # Tests
 # ==============================================================================
 
-test: test-unit test-integration
+test: test-unit test-unit-rust test-integration
 
-# --- Unit tests ---
+# --- Unit tests (Python – original watcher) ---
 WATCHER_UNIT_TESTS := test_models.py test_prefilter.py test_step1.py test_step2.py \
                       test_step3.py test_step4.py test_step5.py test_step6.py \
                       test_orchestrator_race.py
 
 test-unit:
 	cd watcher && python3 -m pytest $(WATCHER_UNIT_TESTS) -v
+
+# --- Unit tests (Rust watcher) ---
+test-unit-rust:
+	cd watcher-rs && cargo test -- --nocapture
 
 # --- Integration tests ---
 INTEGRATION_COMPOSE := tests/integration/docker-compose.fast.yaml
