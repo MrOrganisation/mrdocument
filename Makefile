@@ -7,7 +7,8 @@
 # Disable BuildKit provenance attestation (stalls on some setups)
 export BUILDX_NO_DEFAULT_ATTESTATIONS := 1
 
-COMPOSE := docker compose
+ENV_FILE ?= ../.env
+COMPOSE := docker compose $(if $(wildcard $(ENV_FILE)),--env-file $(ENV_FILE),)
 
 # ==============================================================================
 # Build / Up / Down
