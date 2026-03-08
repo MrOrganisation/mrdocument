@@ -1,0 +1,69 @@
+[package]
+name = "mrdocument-service"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "mrdocument-service"
+path = "src/main.rs"
+
+[dependencies]
+# HTTP server
+axum = { version = "0.8", features = ["multipart"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["trace", "limit"] }
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# HTTP client
+reqwest = { version = "0.12", features = ["multipart", "json", "rustls-tls"], default-features = false }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Date/time
+chrono = { version = "0.4", features = ["serde"] }
+
+# PDF manipulation
+lopdf = "0.34"
+
+# Image handling
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "tiff", "bmp", "webp"] }
+printpdf = "0.7"
+
+# EML parsing
+mailparse = "0.15"
+
+# DOCX (ZIP + XML)
+zip = "2"
+quick-xml = "0.37"
+
+# Text/encoding
+base64 = "0.22"
+encoding_rs = "0.8"
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Regex
+regex = "1"
+
+# Unicode
+unicode-normalization = "0.1"
+
+# Mime type detection
+mime_guess = "2"
+
+# Error handling
+thiserror = "2"
+
+[profile.release]
+opt-level = 2
+lto = "thin"

@@ -1,0 +1,23 @@
+FROM rust:1-alpine AS builder
+
+RUN apk add --no-cache musl-dev
+
+WORKDIR /build
+COPY service-rs/ ./
+RUN cargo build --release
+
+FROM alpine:3.20
+
+RUN apk add --no-cache curl ca-certificates unrtf
+
+RUN mkdir -p /app /costs && chmod 755 /app /costs
+
+COPY --from=builder /build/target/release/mrdocument-service /app/mrdocument-service
+COPY service-rs/config.yaml /app/config.yaml
+COPY service-rs/pricing.yaml /app/pricing.yaml
+RUN chmod +x /app/mrdocument-service
+
+WORKDIR /app
+EXPOSE 8000
+
+CMD ["/app/mrdocument-service"]

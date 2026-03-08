@@ -1,0 +1,141 @@
+# AI Model Configuration for MrDocument
+
+# =============================================================================
+# Model Configuration
+# =============================================================================
+# List of models to try in order. If first model fails, try the next one.
+# Only if all models fail, the document processing fails.
+# Each model has its own parameters:
+#   - name: Model identifier (required)
+#   - max_tokens: Maximum tokens for response (default: 1024)
+#   - extended_thinking: Enable extended thinking mode (default: false)
+#   - thinking_budget: Token budget for thinking (default: 10000, only if extended_thinking is true)
+#
+# Example with multiple models (fallback chain):
+#   models:
+#     - name: claude-haiku-4-5
+#       max_tokens: 1024
+#       extended_thinking: true
+#       thinking_budget: 20000
+#     - name: claude-sonnet-4-5
+#       max_tokens: 2048
+#       extended_thinking: false
+
+models:
+  - name: claude-haiku-4-5
+    max_tokens: 1024
+    extended_thinking: true
+    thinking_budget: 20000
+  - name: claude-sonnet-4-6
+    max_tokens: 1024
+    extended_thinking: true
+    thinking_budget: 20000
+      #  - name: claude-opus-4-6
+      #    max_tokens: 1024
+      #    extended_thinking: true
+      #    thinking_budget: 20000
+
+extraction:
+  # Maximum characters of document text to send to the model
+  max_input_chars: 100000
+
+# =============================================================================
+# Tool-based extraction (structured output via Anthropic tool_use)
+# =============================================================================
+
+# System prompt for metadata extraction
+extraction_system_prompt: |
+  You are a document metadata extraction assistant. Analyze documents and extract structured metadata.
+  When an original filename is provided, consider it as additional context for your inference -
+  filenames often contain useful hints about the document's date, type, sender, or topic.
+  {language_instruction}
+
+# Base instructions for fields with candidates (controls whether AI can invent new values)
+base_instruction_strict: |
+  You MUST choose exactly one value from the provided list. Do not invent new values.
+
+base_instruction_flexible: |
+  Choose from the provided list if a good match exists. If no match fits well, you may create a new appropriate value.
+
+# Blacklist instruction (appended when blacklist is non-empty)
+blacklist_instruction: |
+  Do NOT use any of these values: {blacklist}
+
+# =============================================================================
+# Reference Field Instructions
+# =============================================================================
+# These are example instructions for common fields. Copy these to your context
+# configuration files and customize as needed. Each field in a context MUST
+# have 'instructions' defined.
+
+# Reference: type field
+# instructions: |
+#   Identify the document type or class (e.g., Invoice, Contract, Letter, Receipt, Statement).
+
+# Reference: sender field
+# instructions: |
+#   Identify the sender, author, or issuing organization of the document.
+
+# Reference: topic field
+# instructions: |
+#   Identify the general topic, dossier, case, or matter this document belongs to.
+#   Documents about the same subject should share the same topic.
+#   Examples: "House Purchase Elm Street", "Tax Year 2024", "Employment Contract John Smith".
+
+# Reference: subject field
+# instructions: |
+#   Provide a brief subject or title describing what this specific document is about (max 50 chars).
+#   This should be more specific than the topic.
+
+# Reference: keywords field
+# instructions: |
+#   Extract exactly 3 keywords that describe the document content.
+#   Keywords must NOT duplicate or be similar to the type, topic, or sender values.
+#   Choose keywords that capture important aspects like key terms, amounts, reference numbers, or significant details.
+
+# Language instruction when primary_language is specified
+language_instruction: |
+  All results shall be returned in {language}.
+
+# Default language instruction when no primary_language is specified
+default_language_instruction: |
+  All results shall be returned in the language of the document.
+
+# =============================================================================
+# New clue suggestion (for candidates with allow_new_clues: true)
+# =============================================================================
+
+new_clue_instruction: |
+  Optional: If you chose one of these values for {field_name}: {candidates}, 
+  you may suggest ONE new clue that would help identify similar documents in the future. 
+  Only provide a clue if you have HIGH CONFIDENCE it is specific to this candidate 
+  and helps differentiate it from other candidates.
+  It must not be information that is specific to this document only.
+  Leave empty if unsure.
+
+# =============================================================================
+# Context determination (first pass)
+# =============================================================================
+
+context_system_prompt: |
+  You are a document classification assistant. Determine which context a document belongs to.
+  When an original filename is provided, consider it as additional context for your classification -
+  filenames often contain useful hints about the document's category or purpose.
+
+context_tool_description: |
+  Classify the document into one of the available contexts based on its content and filename (if provided).
+
+# =============================================================================
+# Transcript Correction (for STT results)
+# =============================================================================
+
+transcript_correction:
+  # Model to use for transcript correction
+  model: claude-sonnet-4-6
+  # Enable extended thinking for better correction quality
+  extended_thinking: true
+  # Token budget for extended thinking
+  thinking_budget: 50000
+  # Use batch API (true) or streaming (false)
+  # Batch is more reliable for long operations but slower to start
+  use_batch: false

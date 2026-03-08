@@ -46,7 +46,7 @@ services:
   mrdocument-service:
     build:
       context: ../..
-      dockerfile: Dockerfile.service
+      dockerfile: Dockerfile.service-rs
     environment:
       OCR_URL: http://mock-ocr:5000
       ANTHROPIC_BASE_URL: http://mock-anthropic:8080

@@ -1,0 +1,39 @@
+# API Pricing Configuration
+# Prices are in USD
+# Model names are normalized (date suffix stripped) before lookup
+
+anthropic:
+  # Claude 4 family (names normalized from e.g. claude-sonnet-4-20250514)
+  claude-opus-4-6:
+    input_per_1m: 15.00     # $ per 1M input tokens
+    output_per_1m: 75.00    # $ per 1M output tokens
+
+  claude-opus-4-5:
+    input_per_1m: 15.00     # $ per 1M input tokens
+    output_per_1m: 75.00    # $ per 1M output tokens
+  
+  claude-sonnet-4-6:
+    input_per_1m: 3.00
+    output_per_1m: 15.00
+
+  claude-sonnet-4-5:
+    input_per_1m: 3.00
+    output_per_1m: 15.00
+
+  claude-haiku-4-5:
+    input_per_1m: 1.00
+    output_per_1m: 5.00
+
+  # Claude 3.5 family (names normalized from e.g. claude-3-5-sonnet-20241022)
+  claude-3-5-sonnet:
+    input_per_1m: 3.00
+    output_per_1m: 15.00
+
+  claude-3-5-haiku:
+    input_per_1m: 0.80
+    output_per_1m: 4.00
+
+elevenlabs:
+  # Scribe STT model
+  scribe_v1:
+    per_hour: 0.40          # $ per hour of audio
