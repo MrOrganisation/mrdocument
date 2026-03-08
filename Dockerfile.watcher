@@ -1,54 +1,22 @@
-FROM python:3.12-alpine
+FROM rust:1-alpine AS builder
 
-# Install dependencies
-# poppler-utils: Required by pdf2image for PDF to image conversion
-# mupdf-tools: Provides mutool for PDF page count and text extraction
-# jpeg-dev, zlib-dev: Required for Pillow image processing
-RUN apk add --no-cache \
-    curl \
-    su-exec \
-    poppler-utils \
-    mupdf-tools \
-    jpeg-dev \
-    zlib-dev \
-    freetype-dev \
-    lcms2-dev \
-    openjpeg-dev \
-    tiff-dev \
-    gcc \
-    musl-dev
+RUN apk add --no-cache musl-dev
 
-# Create app directory and sync mount point
-RUN mkdir -p /app /sync /costs && \
-    chmod 755 /app /sync /costs
+WORKDIR /build
+COPY watcher-rs/ ./
+RUN cargo build --release
 
-# Copy requirements first and install deps (cached unless requirements.txt changes)
-COPY watcher/requirements.txt /app/requirements.txt
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --retries 5 --timeout 120 -r /app/requirements.txt && \
-    apk del gcc musl-dev
+FROM alpine:3.20
 
-# Copy watcher service files (changes here don't invalidate pip cache)
-COPY watcher/sorter.py /app/sorter.py
-COPY watcher/models.py /app/models.py
-COPY watcher/prefilter.py /app/prefilter.py
-COPY watcher/step1.py /app/step1.py
-COPY watcher/step2.py /app/step2.py
-COPY watcher/step3.py /app/step3.py
-COPY watcher/step4.py /app/step4.py
-COPY watcher/step5.py /app/step5.py
-COPY watcher/step6.py /app/step6.py
-COPY watcher/db_new.py /app/db_new.py
-COPY watcher/orchestrator.py /app/orchestrator.py
-COPY watcher/app.py /app/app.py
+RUN apk add --no-cache curl su-exec ca-certificates
+
+RUN mkdir -p /app /sync /costs && chmod 755 /app /sync /costs
+
+COPY --from=builder /build/target/release/watcher /app/watcher
+COPY watcher-rs/entrypoint.sh /app/entrypoint.sh
+RUN chmod +x /app/watcher /app/entrypoint.sh
 
 WORKDIR /app
-
-# Copy entrypoint script
-COPY watcher/entrypoint-watcher.sh /app/entrypoint.sh
-RUN chmod +x /app/entrypoint.sh
-
-# Health check port
 EXPOSE 8080
 
 ENTRYPOINT ["/app/entrypoint.sh"]
