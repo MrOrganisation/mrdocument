@@ -1,0 +1,27 @@
+[project]
+name = "stt-cli"
+version = "0.1.0"
+description = "CLI tool for speech-to-text transcription using ElevenLabs"
+authors = [
+    {name = "Developer"}
+]
+readme = "README.md"
+requires-python = ">=3.10,<4"
+dependencies = [
+    "typer (>=0.21.0,<0.22.0)",
+    "rich (>=14.2.0,<15.0.0)",
+    "requests (>=2.32.0,<3.0.0)",
+    "reportlab (>=4.0.0,<5.0.0)",
+    "anthropic (>=0.40.0,<1.0.0)",
+    "pyyaml (>=6.0.3,<7.0.0)",
+    "fastapi (>=0.128.0,<0.129.0)",
+    "uvicorn (>=0.40.0,<0.41.0)",
+    "python-multipart (>=0.0.21,<0.0.22)"
+]
+
+[project.scripts]
+stt = "stt_cli.cli:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
