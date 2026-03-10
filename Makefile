@@ -1,6 +1,6 @@
 .PHONY: build up down \
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
-       push push-service push-watcher push-stt push-ocrmypdf push-anthropic-adapter push-db \
+       push \
        release \
        test test-unit test-integration test-integration-syncthing test-contexts \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
@@ -17,41 +17,35 @@ COMPOSE := docker compose $(if $(wildcard $(ENV_FILE)),--env-file $(ENV_FILE),)
 # ==============================================================================
 
 VERSION    := $(shell cat VERSION)
+BRANCH     := $(shell git rev-parse --abbrev-ref HEAD)
 COMMIT     := $(shell git rev-parse --short HEAD)
-IMAGE_TAG  := $(VERSION)-$(COMMIT)
+IMAGE_TAG  := $(VERSION)-$(BRANCH)-$(COMMIT)
 REGISTRY   := ghcr.io/olekli
+RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
 
 # ==============================================================================
 # Build / Up / Down
 # ==============================================================================
 
-IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
-
 build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db
 
 build-service:
-	$(COMPOSE) build mrdocument-service --no-cache
-	docker tag mrdocument-service:latest-custom $(REGISTRY)/mrdocument-service:$(IMAGE_TAG)
+	$(COMPOSE) build mrdocument-service
 
 build-watcher:
-	$(COMPOSE) build mrdocument-watcher --no-cache
-	docker tag mrdocument-watcher:latest-custom $(REGISTRY)/mrdocument-watcher:$(IMAGE_TAG)
+	$(COMPOSE) build mrdocument-watcher
 
 build-stt:
-	$(COMPOSE) build stt --no-cache
-	docker tag stt:latest-custom $(REGISTRY)/stt:$(IMAGE_TAG)
+	$(COMPOSE) build stt
 
 build-ocrmypdf:
 	$(COMPOSE) build ocrmypdf
-	docker tag ocrmypdf:latest-custom $(REGISTRY)/ocrmypdf:$(IMAGE_TAG)
 
 build-anthropic-adapter:
 	$(COMPOSE) build anthropic-adapter
-	docker tag anthropic-adapter:latest-custom $(REGISTRY)/anthropic-adapter:$(IMAGE_TAG)
 
 build-db:
 	$(COMPOSE) build mrdocument-db
-	docker tag mrdocument-db:latest-custom $(REGISTRY)/mrdocument-db:$(IMAGE_TAG)
 
 up: build
 	$(COMPOSE) up -d
@@ -63,37 +57,25 @@ down:
 # Push to GHCR
 # ==============================================================================
 
-push: push-service push-watcher push-stt push-ocrmypdf push-anthropic-adapter push-db
-
-push-service:
-	docker push $(REGISTRY)/mrdocument-service:$(IMAGE_TAG)
-
-push-watcher:
-	docker push $(REGISTRY)/mrdocument-watcher:$(IMAGE_TAG)
-
-push-stt:
-	docker push $(REGISTRY)/stt:$(IMAGE_TAG)
-
-push-ocrmypdf:
-	docker push $(REGISTRY)/ocrmypdf:$(IMAGE_TAG)
-
-push-anthropic-adapter:
-	docker push $(REGISTRY)/anthropic-adapter:$(IMAGE_TAG)
-
-push-db:
-	docker push $(REGISTRY)/mrdocument-db:$(IMAGE_TAG)
+push: build
+	@for img in $(RELEASE_IMAGES); do \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest-$(BRANCH); \
+		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker push $(REGISTRY)/$$img:latest-$(BRANCH); \
+	done
 
 # ==============================================================================
-# Release (tag as X.y.z + latest, then push both)
+# Release (tag as X.y.z-branch-commit + latest-branch + latest, then push all)
 # ==============================================================================
-
-RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
 
 release: build
 	@for img in $(RELEASE_IMAGES); do \
 		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest-$(BRANCH); \
 		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest; \
 		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker push $(REGISTRY)/$$img:latest-$(BRANCH); \
 		docker push $(REGISTRY)/$$img:latest; \
 	done
 
