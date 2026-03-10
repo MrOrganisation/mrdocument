@@ -1,5 +1,7 @@
 .PHONY: build up down \
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
+       push \
+       release \
        test test-unit test-unit-rust test-integration test-integration-syncthing test-contexts \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
        dump-db
@@ -7,7 +9,19 @@
 # Disable BuildKit provenance attestation (stalls on some setups)
 export BUILDX_NO_DEFAULT_ATTESTATIONS := 1
 
-COMPOSE := docker compose
+ENV_FILE ?= ../.env
+COMPOSE := docker compose $(if $(wildcard $(ENV_FILE)),--env-file $(ENV_FILE),)
+
+# ==============================================================================
+# Versioning
+# ==============================================================================
+
+VERSION    := $(shell cat VERSION)
+BRANCH     := $(shell git rev-parse --abbrev-ref HEAD)
+COMMIT     := $(shell git rev-parse --short HEAD)
+IMAGE_TAG  := $(VERSION)-$(BRANCH)-$(COMMIT)
+REGISTRY   := ghcr.io/mrorganisation
+RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
 
 # ==============================================================================
 # Build / Up / Down
@@ -16,13 +30,13 @@ COMPOSE := docker compose
 build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db
 
 build-service:
-	$(COMPOSE) build mrdocument-service --no-cache
+	$(COMPOSE) build mrdocument-service
 
 build-watcher:
-	$(COMPOSE) build mrdocument-watcher --no-cache
+	$(COMPOSE) build mrdocument-watcher
 
 build-stt:
-	$(COMPOSE) build stt --no-cache
+	$(COMPOSE) build stt
 
 build-ocrmypdf:
 	$(COMPOSE) build ocrmypdf
@@ -40,12 +54,38 @@ down:
 	$(COMPOSE) down
 
 # ==============================================================================
+# Push to GHCR
+# ==============================================================================
+
+push: build
+	@for img in $(RELEASE_IMAGES); do \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest-$(BRANCH); \
+		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker push $(REGISTRY)/$$img:latest-$(BRANCH); \
+	done
+
+# ==============================================================================
+# Release (tag as X.y.z-branch-commit + latest-branch + latest, then push all)
+# ==============================================================================
+
+release: build
+	@for img in $(RELEASE_IMAGES); do \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest-$(BRANCH); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest; \
+		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
+		docker push $(REGISTRY)/$$img:latest-$(BRANCH); \
+		docker push $(REGISTRY)/$$img:latest; \
+	done
+
+# ==============================================================================
 # Tests
 # ==============================================================================
 
 test: test-unit test-unit-rust test-integration
 
-# --- Unit tests (Python – original watcher) ---
+# --- Unit tests ---
 WATCHER_UNIT_TESTS := test_models.py test_prefilter.py test_step1.py test_step2.py \
                       test_step3.py test_step4.py test_step5.py test_step6.py \
                       test_orchestrator_race.py

@@ -7,6 +7,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ocrmypdf
+      cache_from:
+        - ghcr.io/mrorganisation/ocrmypdf:latest
     image: ocrmypdf:latest-custom
     container_name: ocrmypdf
     restart: unless-stopped
@@ -29,6 +31,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.anthropic-adapter
+      cache_from:
+        - ghcr.io/mrorganisation/anthropic-adapter:latest
     image: anthropic-adapter:latest-custom
     container_name: anthropic-adapter
     restart: unless-stopped
@@ -47,6 +51,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.service
+      cache_from:
+        - ghcr.io/mrorganisation/mrdocument-service:latest
     image: mrdocument-service:latest-custom
     container_name: mrdocument-service
     restart: unless-stopped
@@ -80,6 +86,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.stt
+      cache_from:
+        - ghcr.io/mrorganisation/stt:latest
     image: stt:latest-custom
     container_name: stt
     restart: unless-stopped
@@ -140,6 +148,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.db
+      cache_from:
+        - ghcr.io/mrorganisation/mrdocument-db:latest
     image: mrdocument-db:latest-custom
     container_name: mrdocument-db
     restart: unless-stopped
@@ -163,6 +173,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.watcher
+      cache_from:
+        - ghcr.io/mrorganisation/mrdocument-watcher:latest
     image: mrdocument-watcher:latest-custom
     container_name: mrdocument-watcher
     restart: unless-stopped
