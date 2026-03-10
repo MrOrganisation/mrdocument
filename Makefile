@@ -20,7 +20,7 @@ VERSION    := $(shell cat VERSION)
 BRANCH     := $(shell git rev-parse --abbrev-ref HEAD)
 COMMIT     := $(shell git rev-parse --short HEAD)
 IMAGE_TAG  := $(VERSION)-$(BRANCH)-$(COMMIT)
-REGISTRY   := ghcr.io/olekli
+REGISTRY   := ghcr.io/mrorganisation
 RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
 
 # ==============================================================================

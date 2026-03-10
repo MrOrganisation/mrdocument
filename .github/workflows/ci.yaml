@@ -34,7 +34,7 @@ jobs:
         run: |
           BRANCH=$(echo "${GITHUB_REF#refs/heads/}" | tr '/' '-')
           for img in mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db; do
-            docker pull ghcr.io/olekli/$img:latest-$BRANCH || docker pull ghcr.io/olekli/$img:latest || true
+            docker pull ghcr.io/mrorganisation/$img:latest-$BRANCH || docker pull ghcr.io/mrorganisation/$img:latest || true
           done
 
       - name: Push
@@ -63,7 +63,7 @@ jobs:
       - name: Pull cache images
         run: |
           for img in mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db; do
-            docker pull ghcr.io/olekli/$img:latest || true
+            docker pull ghcr.io/mrorganisation/$img:latest || true
           done
 
       - name: Release
