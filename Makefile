@@ -91,9 +91,9 @@ RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-a
 
 release: build
 	@for img in $(RELEASE_IMAGES); do \
-		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(VERSION); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
 		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest; \
-		docker push $(REGISTRY)/$$img:$(VERSION); \
+		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
 		docker push $(REGISTRY)/$$img:latest; \
 	done
 
