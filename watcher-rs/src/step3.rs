@@ -182,6 +182,7 @@ impl SttConfig {
 #[derive(Clone)]
 pub struct Processor {
     pub root: PathBuf,
+    pub name: String,
     pub service_url: String,
     pub stt_url: Option<String>,
     pub timeout: Duration,
@@ -196,6 +197,7 @@ impl Processor {
     /// Create a new processor.
     pub fn new(
         root: PathBuf,
+        name: String,
         service_url: String,
         stt_url: Option<String>,
         timeout: f64,
@@ -209,6 +211,7 @@ impl Processor {
 
         Self {
             root,
+            name,
             service_url,
             stt_url,
             timeout: Duration::from_secs_f64(timeout),
@@ -359,15 +362,15 @@ impl Processor {
             // new_clues handling is best-effort; skipped in cloned processor context
 
             info!(
-                "Processed {} -> {}",
-                source_path_entry.path, output_filename
+                "[{}] Processed {} -> {}",
+                self.name, source_path_entry.path, output_filename
             );
             Ok(())
         }
         .await;
 
         if let Err(e) = process_result {
-            error!("Failed to process {}: {}", output_filename, e);
+            error!("[{}] Failed to process {}: {}", self.name, output_filename, e);
             // Create 0-byte file on error
             let _ = touch_file(&output_path).await;
         }
@@ -432,7 +435,7 @@ impl Processor {
         let stt_url = match &self.stt_url {
             Some(url) => url.clone(),
             None => {
-                warn!("Audio file {} skipped: no STT URL configured", filename);
+                warn!("[{}] Audio file {} skipped: no STT URL configured", self.name, filename);
                 return Ok(None);
             }
         };
@@ -440,7 +443,7 @@ impl Processor {
         let stt_config = match SttConfig::load(&self.root) {
             Some(config) => config,
             None => {
-                warn!("Audio file {} skipped: no stt.yaml found", filename);
+                warn!("[{}] Audio file {} skipped: no stt.yaml found", self.name, filename);
                 return Ok(None);
             }
         };
@@ -469,12 +472,13 @@ impl Processor {
         // Validate transcript
         let segments = transcript.get("segments").and_then(|v| v.as_array());
         if segments.is_none() || segments.unwrap().is_empty() {
-            error!("Empty transcript for {}", filename);
+            error!("[{}] Empty transcript for {}", self.name, filename);
             return Ok(None);
         }
 
         info!(
-            "Got transcript for {}: {} segments",
+            "[{}] Got transcript for {}: {} segments",
+            self.name,
             filename,
             segments.unwrap().len()
         );
@@ -533,7 +537,8 @@ impl Processor {
                     if let Some(ref kt) = keyterms {
                         if !kt.is_empty() {
                             info!(
-                                "Audio classification for {}: context={}, {} keyterms",
+                                "[{}] Audio classification for {}: context={}, {} keyterms",
+                                self.name,
                                 filename,
                                 context.unwrap_or("none"),
                                 kt.len()
@@ -555,7 +560,7 @@ impl Processor {
         match result {
             Ok(kt) => kt,
             Err(e) => {
-                warn!("Audio classification failed: {}", e);
+                warn!("[{}] Audio classification failed: {}", self.name, e);
                 None
             }
         }
@@ -627,8 +632,8 @@ impl Processor {
         contexts: &[serde_json::Value],
     ) -> (serde_json::Value, Option<serde_json::Value>) {
         info!(
-            "Intro file detected, starting two-pass flow for {}",
-            filename
+            "[{}] Intro file detected, starting two-pass flow for {}",
+            self.name, filename
         );
         let mut pre_classified: Option<serde_json::Value> = None;
         let mut final_transcript = transcript.clone();
@@ -649,7 +654,7 @@ impl Processor {
             let ct_result = match ct_result {
                 Some(r) => r,
                 None => {
-                    warn!("Transcript classification failed, using first pass only");
+                    warn!("[{}] Transcript classification failed, using first pass only", self.name);
                     return Ok(());
                 }
             };
@@ -673,7 +678,8 @@ impl Processor {
             let ct_metadata = ct_result.get("metadata").cloned().unwrap_or(serde_json::json!({}));
 
             info!(
-                "Transcript classification: context={}, keyterms={}, speakers={:?}",
+                "[{}] Transcript classification: context={}, keyterms={}, speakers={:?}",
+                self.name,
                 ct_context.as_deref().unwrap_or("none"),
                 keyterms_2.as_ref().map_or(0, |kt| kt.len()),
                 n_speakers
@@ -701,7 +707,7 @@ impl Processor {
             // Second STT pass with improved keyterms
             if let Some(ref kt2) = keyterms_2 {
                 if !kt2.is_empty() {
-                    info!("Running second STT pass with {} keyterms", kt2.len());
+                    info!("[{}] Running second STT pass with {} keyterms", self.name, kt2.len());
                     let speaker_count =
                         n_speakers.and_then(|n| if n > 1 { Some(n) } else { None });
                     let transcript_2 = self
@@ -723,17 +729,18 @@ impl Processor {
                             .map_or(false, |a| !a.is_empty());
                         if has_segments {
                             info!(
-                                "Second STT pass successful: {} segments",
+                                "[{}] Second STT pass successful: {} segments",
+                                self.name,
                                 t2.get("segments")
                                     .and_then(|v| v.as_array())
                                     .map_or(0, |a| a.len())
                             );
                             final_transcript = t2;
                         } else {
-                            warn!("Second STT pass failed, using first pass");
+                            warn!("[{}] Second STT pass failed, using first pass", self.name);
                         }
                     } else {
-                        warn!("Second STT pass failed, using first pass");
+                        warn!("[{}] Second STT pass failed, using first pass", self.name);
                     }
                 }
             }
@@ -743,7 +750,7 @@ impl Processor {
         .await;
 
         if let Err(e) = result {
-            warn!("Intro two-pass error: {}, using first pass", e);
+            warn!("[{}] Intro two-pass error: {}, using first pass", self.name, e);
         }
 
         (final_transcript, pre_classified)

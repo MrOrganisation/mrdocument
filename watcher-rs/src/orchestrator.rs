@@ -220,6 +220,7 @@ impl DocumentWatcherV2 {
         let detector = FilesystemDetector::new(root.clone());
         let processor = Processor::new(
             root.clone(),
+            watcher_name.clone(),
             service_url.clone(),
             stt_url,
             processor_timeout,
