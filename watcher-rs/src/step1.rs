@@ -69,6 +69,122 @@ pub fn compute_sha256(path: &Path) -> Result<String> {
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+/// Compute a content hash that ignores metadata.
+///
+/// - **PDF**: hash page content streams only (ignoring Info dict, XMP, etc.)
+/// - **Audio** (mp3/mp4/m4a/mov/wav/ogg/flac/aac/wma/webm): hash raw audio
+///   data (stripping ID3 / container metadata)
+/// - **TXT / everything else**: same as normal SHA-256
+///
+/// Returns `None` when the content hash would be identical to the normal hash
+/// (i.e. for TXT and other non-PDF/audio files), so the caller can skip
+/// storing a redundant value.
+pub fn compute_content_hash(path: &Path) -> Option<String> {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .unwrap_or_default();
+
+    match ext.as_str() {
+        "pdf" => compute_pdf_content_hash(path),
+        "mp3" => compute_mp3_content_hash(path),
+        "mp4" | "m4a" | "mov" | "webm" => compute_mp4_content_hash(path),
+        _ => None, // TXT and others: content hash == normal hash
+    }
+}
+
+/// Hash PDF page content streams, ignoring metadata.
+fn compute_pdf_content_hash(path: &Path) -> Option<String> {
+    let doc = lopdf::Document::load(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut has_content = false;
+
+    // Collect and sort page IDs for deterministic ordering
+    let mut page_ids: Vec<lopdf::ObjectId> = doc.page_iter().collect();
+    page_ids.sort();
+
+    for page_id in page_ids {
+        if let Ok(content_data) = doc.get_page_content(page_id) {
+            hasher.update(&content_data);
+            has_content = true;
+        }
+    }
+
+    if has_content {
+        Some(format!("{:x}", hasher.finalize()))
+    } else {
+        None
+    }
+}
+
+/// Hash MP3 audio data, stripping ID3v2 (header) and ID3v1 (tail) tags.
+fn compute_mp3_content_hash(path: &Path) -> Option<String> {
+    let data = fs::read(path).ok()?;
+    if data.len() < 10 {
+        return None;
+    }
+
+    let mut start = 0usize;
+    // Skip ID3v2 header if present
+    if data.len() >= 10 && &data[0..3] == b"ID3" {
+        let size = ((data[6] as usize & 0x7F) << 21)
+            | ((data[7] as usize & 0x7F) << 14)
+            | ((data[8] as usize & 0x7F) << 7)
+            | (data[9] as usize & 0x7F);
+        start = 10 + size;
+    }
+
+    let mut end = data.len();
+    // Skip ID3v1 tag at end if present
+    if end >= 128 && &data[end - 128..end - 125] == b"TAG" {
+        end -= 128;
+    }
+
+    if start >= end {
+        return None;
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(&data[start..end]);
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+/// Hash MP4/M4A/MOV audio data (mdat atom content), ignoring metadata atoms.
+fn compute_mp4_content_hash(path: &Path) -> Option<String> {
+    let data = fs::read(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut has_mdat = false;
+
+    // Walk top-level atoms looking for mdat
+    let mut pos = 0usize;
+    while pos + 8 <= data.len() {
+        let size = u32::from_be_bytes([data[pos], data[pos + 1], data[pos + 2], data[pos + 3]])
+            as usize;
+        let atom_type = &data[pos + 4..pos + 8];
+
+        if size < 8 {
+            break; // invalid atom
+        }
+
+        if atom_type == b"mdat" {
+            let atom_end = (pos + size).min(data.len());
+            if pos + 8 < atom_end {
+                hasher.update(&data[pos + 8..atom_end]);
+                has_mdat = true;
+            }
+        }
+
+        pos += size;
+    }
+
+    if has_mdat {
+        Some(format!("{:x}", hasher.finalize()))
+    } else {
+        None
+    }
+}
+
 /// Check if a relative path is a config file in `sorted/{context}/`.
 fn is_config_file(rel_path: &str) -> bool {
     let parts: Vec<&str> = rel_path.split('/').collect();
@@ -261,8 +377,8 @@ impl FilesystemDetector {
     // Full scan
     // ------------------------------------------------------------------
 
-    fn scan(&self) -> HashMap<String, (String, u64)> {
-        let mut result: HashMap<String, (String, u64)> = HashMap::new();
+    fn scan(&self) -> HashMap<String, (String, Option<String>, u64)> {
+        let mut result: HashMap<String, (String, Option<String>, u64)> = HashMap::new();
 
         // Direct dirs (non-recursive)
         for dirname in DIRECT_DIRS {
@@ -290,7 +406,8 @@ impl FilesystemDetector {
                         let rel_str = rel.to_string_lossy().to_string();
                         match (compute_sha256(&path), path.metadata()) {
                             (Ok(hash), Ok(meta)) => {
-                                result.insert(rel_str, (hash, meta.len()));
+                                let chash = compute_content_hash(&path);
+                                result.insert(rel_str, (hash, chash, meta.len()));
                             }
                             _ => {
                                 tracing::warn!("Failed to read {}", rel.display());
@@ -328,7 +445,8 @@ impl FilesystemDetector {
                     }
                     match (compute_sha256(&file), file.metadata()) {
                         (Ok(hash), Ok(meta)) => {
-                            result.insert(rel_str, (hash, meta.len()));
+                            let chash = compute_content_hash(&file);
+                            result.insert(rel_str, (hash, chash, meta.len()));
                         }
                         _ => {
                             tracing::warn!("Failed to read {}", rel.display());
@@ -361,7 +479,7 @@ impl FilesystemDetector {
             }
         }
 
-        for (rel_path, (file_hash, file_size)) in &current_state {
+        for (rel_path, (file_hash, content_hash, file_size)) in &current_state {
             let location = get_location(rel_path);
 
             // Stray detection: unknown file in non-eligible location
@@ -387,6 +505,7 @@ impl FilesystemDetector {
                 event_type: EventType::Addition,
                 path: rel_path.clone(),
                 hash: Some(file_hash.clone()),
+                content_hash: content_hash.clone(),
                 size: Some(*file_size),
             });
         }
@@ -400,6 +519,7 @@ impl FilesystemDetector {
                         event_type: EventType::Removal,
                         path: pe.path.clone(),
                         hash: None,
+                        content_hash: None,
                         size: None,
                     });
                 }
@@ -410,6 +530,7 @@ impl FilesystemDetector {
                         event_type: EventType::Removal,
                         path: pe.path.clone(),
                         hash: None,
+                        content_hash: None,
                         size: None,
                     });
                 }
@@ -419,7 +540,7 @@ impl FilesystemDetector {
         // Update previous state
         self.previous_state = current_state
             .into_iter()
-            .map(|(path, (hash, _))| (path, hash))
+            .map(|(path, (hash, _, _))| (path, hash))
             .collect();
 
         changes
@@ -496,10 +617,12 @@ impl FilesystemDetector {
                     }
                 }
 
+                let content_hash = compute_content_hash(&abs_path);
                 changes.push(ChangeItem {
                     event_type: EventType::Addition,
                     path: rel_path.clone(),
                     hash: Some(file_hash.clone()),
+                    content_hash,
                     size: Some(file_size),
                 });
 
@@ -512,6 +635,7 @@ impl FilesystemDetector {
                         event_type: EventType::Removal,
                         path: rel_path.clone(),
                         hash: None,
+                        content_hash: None,
                         size: None,
                     });
                     self.previous_state.remove(rel_path);

@@ -65,6 +65,7 @@ fn find_by_hash_mut<'a>(records: &'a mut [Record], hash_value: &str) -> Option<&
         .find(|r| r.hash.as_deref() == Some(hash_value))
 }
 
+
 fn find_by_output_filename_mut<'a>(
     records: &'a mut [Record],
     filename: &str,
@@ -74,7 +75,12 @@ fn find_by_output_filename_mut<'a>(
         .find(|r| r.output_filename.as_deref() == Some(filename))
 }
 
-fn is_duplicate_hash(records: &[Record], hash_value: &str, exclude_id: Uuid) -> bool {
+fn is_duplicate_hash(
+    records: &[Record],
+    hash_value: &str,
+    content_hash: Option<&str>,
+    exclude_id: Uuid,
+) -> bool {
     if hash_value.is_empty() {
         return false;
     }
@@ -82,11 +88,23 @@ fn is_duplicate_hash(records: &[Record], hash_value: &str, exclude_id: Uuid) -> 
         if r.id == exclude_id {
             continue;
         }
+        // Check regular hashes
         if r.source_hash == hash_value {
             return true;
         }
         if r.hash.as_deref() == Some(hash_value) {
             return true;
+        }
+        // Check content hashes
+        if let Some(ch) = content_hash {
+            if !ch.is_empty() {
+                if r.source_content_hash.as_deref() == Some(ch) {
+                    return true;
+                }
+                if r.content_hash.as_deref() == Some(ch) {
+                    return true;
+                }
+            }
         }
     }
     false
@@ -233,8 +251,9 @@ fn handle_addition<F>(
             } else {
                 let sidecar = read_sidecar(&change.path);
                 let change_hash = change.hash.as_deref().unwrap_or("");
+                let change_content_hash = change.content_hash.as_deref();
 
-                if is_duplicate_hash(records, change_hash, record_id) {
+                if is_duplicate_hash(records, change_hash, change_content_hash, record_id) {
                     warn!(
                         "Duplicate hash {} for output {}, discarding result",
                         change_hash, change.path
@@ -272,6 +291,7 @@ fn handle_addition<F>(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
                 record.hash = change.hash.clone();
+                record.content_hash = change.content_hash.clone();
                 record
                     .current_paths
                     .push(PathEntry { path: change.path.clone(), timestamp: now });
@@ -290,6 +310,7 @@ fn handle_addition<F>(
 
     let (match_fields, allows_new) = config;
     let change_hash = change.hash.as_deref().unwrap_or("");
+    let change_content_hash = change.content_hash.as_deref();
 
     // Try to match against existing records
     let mut matched_id: Option<Uuid> = None;
@@ -301,7 +322,6 @@ fn handle_addition<F>(
         }
         match *field {
             "source_hash" => {
-                // Search in records, then existing_new, then created
                 if let Some(r) = find_by_source_hash(records, change_hash) {
                     matched_id = Some(r.id);
                     matched_field = Some(field);
@@ -362,6 +382,7 @@ fn handle_addition<F>(
         }
     } else if allows_new {
         let mut new_record = Record::new(filename.clone(), change_hash.to_string());
+        new_record.source_content_hash = change.content_hash.clone();
         new_record.source_paths.push(PathEntry {
             path: change.path.clone(),
             timestamp: now,
@@ -806,6 +827,7 @@ mod tests {
             event_type,
             path: path.to_string(),
             hash: hash.map(|s| s.to_string()),
+            content_hash: None,
             size,
         }
     }

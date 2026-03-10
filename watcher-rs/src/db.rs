@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS mrdocument.documents_v2 (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     original_filename       TEXT NOT NULL,
     source_hash             TEXT NOT NULL,
+    source_content_hash     TEXT,
 
     -- Path lists (JSONB arrays of {"path": "...", "timestamp": "..."})
     source_paths            JSONB NOT NULL DEFAULT '[]',
@@ -36,6 +37,7 @@ CREATE TABLE IF NOT EXISTS mrdocument.documents_v2 (
     metadata                JSONB,
     assigned_filename       TEXT,
     hash                    TEXT,
+    content_hash            TEXT,
 
     -- Processing
     output_filename         TEXT,
@@ -72,6 +74,14 @@ CREATE INDEX IF NOT EXISTS idx_docs_v2_hash
     ON mrdocument.documents_v2(hash)
     WHERE hash IS NOT NULL;
 
+CREATE INDEX IF NOT EXISTS idx_docs_v2_source_content_hash
+    ON mrdocument.documents_v2(source_content_hash)
+    WHERE source_content_hash IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_docs_v2_content_hash
+    ON mrdocument.documents_v2(content_hash)
+    WHERE content_hash IS NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_docs_v2_output_filename
     ON mrdocument.documents_v2(output_filename)
     WHERE output_filename IS NOT NULL;
@@ -85,6 +95,26 @@ CREATE INDEX IF NOT EXISTS idx_docs_v2_metadata
 CREATE INDEX IF NOT EXISTS idx_docs_v2_username
     ON mrdocument.documents_v2(username)
     WHERE username IS NOT NULL;
+
+-- Migrations for content hash columns (idempotent)
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'source_content_hash'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN source_content_hash TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'content_hash'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN content_hash TEXT;
+    END IF;
+END
+$$;
 
 -- Auto-update trigger on updated_at
 CREATE OR REPLACE FUNCTION mrdocument.update_documents_v2_updated_at()
@@ -189,6 +219,7 @@ impl Database {
         let id: Uuid = row.try_get("id")?;
         let original_filename: String = row.try_get("original_filename")?;
         let source_hash: String = row.try_get("source_hash")?;
+        let source_content_hash: Option<String> = row.try_get("source_content_hash")?;
 
         let source_paths_json: serde_json::Value = row.try_get("source_paths")?;
         let current_paths_json: serde_json::Value = row.try_get("current_paths")?;
@@ -199,6 +230,7 @@ impl Database {
         let metadata: Option<serde_json::Value> = row.try_get("metadata")?;
         let assigned_filename: Option<String> = row.try_get("assigned_filename")?;
         let hash: Option<String> = row.try_get("hash")?;
+        let content_hash: Option<String> = row.try_get("content_hash")?;
 
         let output_filename: Option<String> = row.try_get("output_filename")?;
         let state_str: String = row.try_get("state")?;
@@ -235,6 +267,7 @@ impl Database {
             id,
             original_filename,
             source_hash,
+            source_content_hash,
             source_paths: Self::json_to_path_entries(&source_paths_json),
             current_paths: Self::json_to_path_entries(&current_paths_json),
             missing_source_paths: Self::json_to_path_entries(&missing_source_paths_json),
@@ -243,6 +276,7 @@ impl Database {
             metadata,
             assigned_filename,
             hash,
+            content_hash,
             output_filename,
             state,
             target_path,
@@ -282,29 +316,30 @@ impl Database {
         sqlx::query(
             r#"
             INSERT INTO mrdocument.documents_v2 (
-                id, original_filename, source_hash,
+                id, original_filename, source_hash, source_content_hash,
                 source_paths, current_paths,
                 missing_source_paths, missing_current_paths,
-                context, metadata, assigned_filename, hash,
+                context, metadata, assigned_filename, hash, content_hash,
                 output_filename, state,
                 target_path, source_reference, current_reference,
                 duplicate_sources, deleted_paths,
                 username
             ) VALUES (
-                $1, $2, $3,
-                $4, $5,
-                $6, $7,
-                $8, $9, $10, $11,
-                $12, $13,
-                $14, $15, $16,
-                $17, $18,
-                $19
+                $1, $2, $3, $4,
+                $5, $6,
+                $7, $8,
+                $9, $10, $11, $12, $13,
+                $14, $15,
+                $16, $17, $18,
+                $19, $20,
+                $21
             )
             "#,
         )
         .bind(record.id)
         .bind(&record.original_filename)
         .bind(&record.source_hash)
+        .bind(&record.source_content_hash)
         .bind(&source_paths_json)
         .bind(&current_paths_json)
         .bind(&missing_source_json)
@@ -313,6 +348,7 @@ impl Database {
         .bind(&record.metadata)
         .bind(&record.assigned_filename)
         .bind(&record.hash)
+        .bind(&record.content_hash)
         .bind(&record.output_filename)
         .bind(record.state.as_str())
         .bind(&record.target_path)
@@ -369,27 +405,30 @@ impl Database {
             UPDATE mrdocument.documents_v2 SET
                 original_filename = $2,
                 source_hash = $3,
-                source_paths = $4,
-                current_paths = $5,
-                missing_source_paths = $6,
-                missing_current_paths = $7,
-                context = $8,
-                metadata = $9,
-                assigned_filename = $10,
-                hash = $11,
-                output_filename = $12,
-                state = $13,
-                target_path = $14,
-                source_reference = $15,
-                current_reference = $16,
-                duplicate_sources = $17,
-                deleted_paths = $18
+                source_content_hash = $4,
+                source_paths = $5,
+                current_paths = $6,
+                missing_source_paths = $7,
+                missing_current_paths = $8,
+                context = $9,
+                metadata = $10,
+                assigned_filename = $11,
+                hash = $12,
+                content_hash = $13,
+                output_filename = $14,
+                state = $15,
+                target_path = $16,
+                source_reference = $17,
+                current_reference = $18,
+                duplicate_sources = $19,
+                deleted_paths = $20
             WHERE id = $1
             "#,
         )
         .bind(record.id)
         .bind(&record.original_filename)
         .bind(&record.source_hash)
+        .bind(&record.source_content_hash)
         .bind(&source_paths_json)
         .bind(&current_paths_json)
         .bind(&missing_source_json)
@@ -398,6 +437,7 @@ impl Database {
         .bind(&record.metadata)
         .bind(&record.assigned_filename)
         .bind(&record.hash)
+        .bind(&record.content_hash)
         .bind(&record.output_filename)
         .bind(record.state.as_str())
         .bind(&record.target_path)

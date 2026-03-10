@@ -148,6 +148,7 @@ pub struct ChangeItem {
     pub event_type: EventType,
     pub path: String,
     pub hash: Option<String>,
+    pub content_hash: Option<String>,
     pub size: Option<u64>,
 }
 
@@ -162,6 +163,7 @@ pub struct Record {
     pub id: Uuid,
     pub original_filename: String,
     pub source_hash: String,
+    pub source_content_hash: Option<String>,
 
     // Paths
     pub source_paths: Vec<PathEntry>,
@@ -174,6 +176,7 @@ pub struct Record {
     pub metadata: Option<serde_json::Value>,
     pub assigned_filename: Option<String>,
     pub hash: Option<String>,
+    pub content_hash: Option<String>,
 
     // Processing
     pub output_filename: Option<String>,
@@ -197,6 +200,7 @@ impl Record {
             id: Uuid::new_v4(),
             original_filename,
             source_hash,
+            source_content_hash: None,
             source_paths: Vec::new(),
             current_paths: Vec::new(),
             missing_source_paths: Vec::new(),
@@ -205,6 +209,7 @@ impl Record {
             metadata: None,
             assigned_filename: None,
             hash: None,
+            content_hash: None,
             output_filename: None,
             state: State::IsNew,
             target_path: None,
@@ -559,6 +564,7 @@ mod tests {
             event_type: EventType::Addition,
             path: "incoming/doc.pdf".into(),
             hash: Some("abc123".into()),
+            content_hash: None,
             size: Some(1024),
         };
         assert_eq!(item.event_type, EventType::Addition);
@@ -573,6 +579,7 @@ mod tests {
             event_type: EventType::Removal,
             path: "archive/old.pdf".into(),
             hash: None,
+            content_hash: None,
             size: None,
         };
         assert_eq!(item.event_type, EventType::Removal);
