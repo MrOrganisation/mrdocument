@@ -18,12 +18,14 @@ import pytest
 from conftest import (
     TestConfig,
     atomic_copy,
+    db_exec,
     poll_for_file,
     poll_for_file_recursive,
     poll_for_file_recursive_in,
     poll_for_smart_folder_symlink,
     poll_until_gone,
     poll_until_symlink_gone,
+    restart_watcher,
     verify_filename_components,
     write_test_file,
 )
@@ -716,3 +718,114 @@ class TestBrokenSmartFolderCleanup:
             test_config.poll_interval,
             test_config.max_timeout,
         ), f"Smart folder symlink not removed after trash: {old_sf_link}"
+
+
+class TestContentHashBackfill:
+    """Test that content hashes are backfilled for existing records on restart.
+
+    Processes a PDF through the pipeline, then NULLs out the content hashes
+    in the DB and restarts the watcher.  The backfill logic should recompute
+    them from the files on disk.
+    """
+
+    def test_content_hash_backfill_on_restart(
+        self, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        # 1. Process a dedicated PDF through incoming -> processed
+        src = generated_dir / "backfill_test_rechnung.pdf"
+        assert src.exists(), f"Generated PDF missing: {src}"
+        dest = test_config.incoming_dir / "backfill_test_rechnung.pdf"
+        atomic_copy(src, dest)
+
+        # Poll processed/ for the output file
+        processed = poll_for_file(
+            test_config.processed_dir,
+            "arbeit-*2025-03-15*.pdf",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_names={src.name},
+        )
+        assert processed is not None, "PDF not found in processed/ within timeout"
+
+        # Move from processed/ to reviewed/ (mirrors what the test pipeline does)
+        existing_sorted = set(test_config.sorted_dir.rglob("*2025-03-15*.pdf"))
+        reviewed_path = test_config.reviewed_dir / processed.name
+        shutil.move(str(processed), reviewed_path)
+
+        # Poll sorted/ for the final file
+        sorted_file = poll_for_file_recursive(
+            test_config.sorted_dir,
+            "*2025-03-15*.pdf",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing_sorted,
+        )
+        assert sorted_file is not None, "PDF not found in sorted/ within timeout"
+
+        # Wait for DB to be fully updated
+        time.sleep(2)
+
+        # 2. Verify source_content_hash is set (set during new record creation)
+        row = db_exec(
+            "SELECT source_content_hash, content_hash "
+            "FROM mrdocument.documents_v2 "
+            "WHERE original_filename = 'backfill_test_rechnung.pdf'"
+        )
+        assert row, f"Record not found in DB (sorted file: {sorted_file})"
+        source_ch, content_ch = row.split("|")
+        assert source_ch, "source_content_hash should be set after processing"
+        # content_hash may or may not be set at this point — that's OK
+
+        # 3. NULL out the content hashes
+        db_exec(
+            "UPDATE mrdocument.documents_v2 "
+            "SET source_content_hash = NULL, content_hash = NULL "
+            "WHERE original_filename = 'backfill_test_rechnung.pdf'"
+        )
+
+        # Verify they are NULL
+        row = db_exec(
+            "SELECT source_content_hash IS NULL, content_hash IS NULL "
+            "FROM mrdocument.documents_v2 "
+            "WHERE original_filename = 'backfill_test_rechnung.pdf'"
+        )
+        assert row == "t|t", f"Content hashes should be NULL, got: {row}"
+
+        # 4. Restart watcher (triggers backfill)
+        restart_watcher()
+
+        # 5. Poll until source_content_hash is backfilled
+        deadline = time.monotonic() + test_config.max_timeout
+        backfilled = False
+        while time.monotonic() < deadline:
+            row = db_exec(
+                "SELECT source_content_hash "
+                "FROM mrdocument.documents_v2 "
+                "WHERE original_filename = 'backfill_test_rechnung.pdf'"
+            )
+            if row and row != "":
+                backfilled = True
+                break
+            time.sleep(test_config.poll_interval)
+
+        assert backfilled, "source_content_hash was not backfilled after restart"
+
+        # 6. Verify backfilled source_content_hash matches the original
+        row = db_exec(
+            "SELECT source_content_hash "
+            "FROM mrdocument.documents_v2 "
+            "WHERE original_filename = 'backfill_test_rechnung.pdf'"
+        )
+        assert row == source_ch, (
+            f"source_content_hash mismatch: {row} != {source_ch}"
+        )
+
+        # 7. Verify content_hash was also backfilled (computed from sorted file)
+        row = db_exec(
+            "SELECT content_hash "
+            "FROM mrdocument.documents_v2 "
+            "WHERE original_filename = 'backfill_test_rechnung.pdf'"
+        )
+        assert row and row != "", (
+            "content_hash should be backfilled from the sorted PDF file"
+        )

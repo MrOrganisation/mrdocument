@@ -65,6 +65,17 @@ fn find_by_hash_mut<'a>(records: &'a mut [Record], hash_value: &str) -> Option<&
         .find(|r| r.hash.as_deref() == Some(hash_value))
 }
 
+fn find_by_source_content_hash<'a>(records: &'a [Record], hash_value: &str) -> Option<&'a Record> {
+    records
+        .iter()
+        .find(|r| r.source_content_hash.as_deref() == Some(hash_value))
+}
+
+fn find_by_content_hash<'a>(records: &'a [Record], hash_value: &str) -> Option<&'a Record> {
+    records
+        .iter()
+        .find(|r| r.content_hash.as_deref() == Some(hash_value))
+}
 
 fn find_by_output_filename_mut<'a>(
     records: &'a mut [Record],
@@ -337,6 +348,26 @@ fn handle_addition<F>(
                     matched_field = Some(field);
                     break;
                 }
+                // Also match by content hash
+                if let Some(ch) = change_content_hash {
+                    if !ch.is_empty() {
+                        if let Some(r) = find_by_source_content_hash(records, ch) {
+                            matched_id = Some(r.id);
+                            matched_field = Some(field);
+                            break;
+                        }
+                        if let Some(r) = find_by_source_content_hash(existing_new, ch) {
+                            matched_id = Some(r.id);
+                            matched_field = Some(field);
+                            break;
+                        }
+                        if let Some(r) = find_by_source_content_hash(created, ch) {
+                            matched_id = Some(r.id);
+                            matched_field = Some(field);
+                            break;
+                        }
+                    }
+                }
             }
             "hash" => {
                 if let Some(r) = find_by_hash(records, change_hash) {
@@ -353,6 +384,26 @@ fn handle_addition<F>(
                     matched_id = Some(r.id);
                     matched_field = Some(field);
                     break;
+                }
+                // Also match by content hash
+                if let Some(ch) = change_content_hash {
+                    if !ch.is_empty() {
+                        if let Some(r) = find_by_content_hash(records, ch) {
+                            matched_id = Some(r.id);
+                            matched_field = Some(field);
+                            break;
+                        }
+                        if let Some(r) = find_by_content_hash(existing_new, ch) {
+                            matched_id = Some(r.id);
+                            matched_field = Some(field);
+                            break;
+                        }
+                        if let Some(r) = find_by_content_hash(created, ch) {
+                            matched_id = Some(r.id);
+                            matched_field = Some(field);
+                            break;
+                        }
+                    }
                 }
             }
             _ => {}

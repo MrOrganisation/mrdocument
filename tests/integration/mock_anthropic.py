@@ -151,6 +151,12 @@ DOCUMENT_METADATA = {
         "sender": "Schulze GmbH",
         "date": "2025-12-30",
     },
+    "backfill_test_rechnung": {
+        "context": "arbeit",
+        "type": "Rechnung",
+        "sender": "Schulze GmbH",
+        "date": "2025-03-15",
+    },
     # Quick succession duplicate tests
     "quick_dup_doc": {
         "context": "arbeit",

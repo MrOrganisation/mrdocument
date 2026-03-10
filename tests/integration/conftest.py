@@ -400,7 +400,7 @@ def atomic_copy(src: Path, dest: Path) -> None:
     for debounce delays.
     """
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    shutil.copy(src, tmp)
+    shutil.copyfile(src, tmp)
     os.rename(str(tmp), str(dest))
 
 
@@ -550,6 +550,23 @@ def restart_watcher(timeout: float = 60) -> None:
     raise TimeoutError(
         f"Watcher not healthy at {WATCHER_HEALTH_URL} after {timeout}s"
     )
+
+
+def db_exec(sql: str) -> str:
+    """Execute a SQL statement against the integration test database.
+
+    Returns the stdout output from ``psql`` running inside the DB container.
+    """
+    import subprocess
+    result = subprocess.run(
+        [
+            "docker", "exec", "integration-mrdocument-db-1",
+            "psql", "-U", "mrdocument", "-d", "mrdocument",
+            "-t", "-A", "-c", sql,
+        ],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+    return result.stdout.strip()
 
 
 # ---------------------------------------------------------------------------

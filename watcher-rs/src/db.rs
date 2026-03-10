@@ -469,6 +469,31 @@ impl Database {
         Ok(deleted)
     }
 
+    /// Update only the content hash columns for a record.
+    /// Only sets a column if the provided value is Some; leaves existing value otherwise.
+    pub async fn update_content_hashes(
+        &self,
+        record_id: Uuid,
+        source_content_hash: Option<&str>,
+        content_hash: Option<&str>,
+    ) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE mrdocument.documents_v2
+            SET source_content_hash = COALESCE($2, source_content_hash),
+                content_hash = COALESCE($3, content_hash)
+            WHERE id = $1
+            "#,
+        )
+        .bind(record_id)
+        .bind(source_content_hash)
+        .bind(content_hash)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update content hashes")?;
+        Ok(())
+    }
+
     // =====================================================================
     // Query operations
     // =====================================================================

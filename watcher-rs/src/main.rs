@@ -39,6 +39,7 @@ use crate::orchestrator::{
     context_field_names_from_sorter, context_folders_from_sorter,
     contexts_for_api_from_sorter, DocumentWatcherV2,
 };
+use crate::step1::compute_content_hash;
 use crate::step5::{RootSmartFolderEntry, SmartFolderEntry};
 
 // ---------------------------------------------------------------------------
@@ -337,6 +338,66 @@ fn setup_user(
 }
 
 // ---------------------------------------------------------------------------
+// Content hash backfill
+// ---------------------------------------------------------------------------
+
+/// Backfill `source_content_hash` and `content_hash` for existing records
+/// where these columns are NULL but could be computed from files on disk.
+/// Runs once at startup before the first cycle.
+async fn backfill_content_hashes(db: &Database, root: &Path, username: &str) -> Result<()> {
+    let snapshot = db.get_snapshot(Some(username)).await?;
+    let mut backfilled = 0u32;
+
+    for record in &snapshot {
+        let needs_source = record.source_content_hash.is_none();
+        let needs_current = record.content_hash.is_none() && record.hash.is_some();
+
+        if !needs_source && !needs_current {
+            continue;
+        }
+
+        let mut new_source_ch: Option<String> = None;
+        let mut new_content_ch: Option<String> = None;
+
+        if needs_source {
+            if let Some(sf) = record.source_file() {
+                let abs_path = root.join(&sf.path);
+                if abs_path.is_file() {
+                    new_source_ch = compute_content_hash(&abs_path);
+                }
+            }
+        }
+
+        if needs_current {
+            if let Some(cf) = record.current_file() {
+                let abs_path = root.join(&cf.path);
+                if abs_path.is_file() {
+                    new_content_ch = compute_content_hash(&abs_path);
+                }
+            }
+        }
+
+        if new_source_ch.is_some() || new_content_ch.is_some() {
+            db.update_content_hashes(
+                record.id,
+                new_source_ch.as_deref(),
+                new_content_ch.as_deref(),
+            )
+            .await?;
+            backfilled += 1;
+        }
+    }
+
+    if backfilled > 0 {
+        info!(
+            "[{}] Backfilled content hashes for {} records",
+            username, backfilled
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Per-watcher event loop
 // ---------------------------------------------------------------------------
 
@@ -350,6 +411,14 @@ async fn run_watcher(
     full_scan_seconds: f64,
     debounce_seconds: f64,
 ) {
+    // Backfill content hashes for existing records before first cycle
+    if let Err(e) = backfill_content_hashes(&watcher.db, &watcher.root, &watcher.name).await {
+        error!(
+            "[{}] Content hash backfill failed: {}",
+            watcher.name, e
+        );
+    }
+
     let result: Result<(), anyhow::Error> = async {
         let mut had_activity = watcher.run_cycle(true).await?;
         let mut last_full = tokio::time::Instant::now();

@@ -842,7 +842,7 @@ class TestWatcherRestart:
 SORTED_AI_DISAGREES = [
     {
         "id": "pdf",
-        "source_stem": "privat_arztbrief_braun",
+        "source_stem": "sorted_wrongctx_pdf",
         "source_fmt": "pdf",
         "test_filename": "sorted_wrongctx_pdf.pdf",
         "ai_context": "privat",
@@ -852,7 +852,7 @@ SORTED_AI_DISAGREES = [
     },
     {
         "id": "txt",
-        "source_stem": "arbeit_vertrag_fischer",
+        "source_stem": "sorted_wrongctx_txt",
         "source_fmt": "txt",
         "test_filename": "sorted_wrongctx_txt.txt",
         "ai_context": "arbeit",
@@ -902,12 +902,10 @@ class TestSortedAiDisagrees:
         # Prepare the test file
         dest = ctx_dir / spec["test_filename"]
         if spec["source_stem"] is not None:
-            # Document: copy from generated, append byte for unique hash
+            # Document: copy from generated (each has unique content)
             src = generated_dir / f"{spec['source_stem']}.{spec['source_fmt']}"
             assert src.exists(), f"Source file missing: {src}"
-            tmp = dest.with_suffix(dest.suffix + ".tmp")
-            tmp.write_bytes(src.read_bytes() + b"\x00")
-            tmp.rename(dest)
+            atomic_copy(src, dest)
         elif spec["source_fmt"] == "m4a":
             # Audio: copy generated M4A file
             src = generated_dir / spec["test_filename"]

@@ -244,7 +244,8 @@ fn has_supported_extension(path: &Path) -> bool {
 /// Subsequent calls use inotify events for O(changes) instead of O(all-files).
 pub struct FilesystemDetector {
     root: PathBuf,
-    previous_state: HashMap<String, String>,
+    /// path → (hash, size, modified_secs) for cache-aware scanning.
+    previous_state: HashMap<String, (String, u64, u64)>,
     watcher: Option<RecommendedWatcher>,
     changed_paths: Arc<Mutex<HashSet<String>>>,
     event_tx: Option<mpsc::Sender<()>>,
@@ -260,7 +261,7 @@ impl FilesystemDetector {
         let (tx, rx) = mpsc::channel(256);
         Self {
             root,
-            previous_state: HashMap::new(),
+            previous_state: HashMap::new(), // (hash, size, mtime_secs)
             watcher: None,
             changed_paths: Arc::new(Mutex::new(HashSet::new())),
             event_tx: Some(tx),
@@ -377,8 +378,44 @@ impl FilesystemDetector {
     // Full scan
     // ------------------------------------------------------------------
 
-    fn scan(&self) -> HashMap<String, (String, Option<String>, u64)> {
-        let mut result: HashMap<String, (String, Option<String>, u64)> = HashMap::new();
+    fn scan(&self) -> HashMap<String, (String, u64)> {
+        let mut result: HashMap<String, (String, u64)> = HashMap::new();
+
+        let mut scan_file = |path: &Path, rel_str: String| {
+            let meta = match path.metadata() {
+                Ok(m) => m,
+                Err(_) => {
+                    tracing::warn!("Failed to read metadata for {}", rel_str);
+                    return;
+                }
+            };
+            let size = meta.len();
+            let mtime_secs = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+
+            // Use cached hash if file metadata (size + mtime) is unchanged
+            if let Some((cached_hash, cached_size, cached_mtime)) =
+                self.previous_state.get(&rel_str)
+            {
+                if *cached_size == size && *cached_mtime == mtime_secs {
+                    result.insert(rel_str, (cached_hash.clone(), size));
+                    return;
+                }
+            }
+
+            match compute_sha256(path) {
+                Ok(hash) => {
+                    result.insert(rel_str, (hash, size));
+                }
+                Err(_) => {
+                    tracing::warn!("Failed to hash {}", path.display());
+                }
+            }
+        };
 
         // Direct dirs (non-recursive)
         for dirname in DIRECT_DIRS {
@@ -403,16 +440,7 @@ impl FilesystemDetector {
                         continue;
                     }
                     if let Ok(rel) = path.strip_prefix(&self.root) {
-                        let rel_str = rel.to_string_lossy().to_string();
-                        match (compute_sha256(&path), path.metadata()) {
-                            (Ok(hash), Ok(meta)) => {
-                                let chash = compute_content_hash(&path);
-                                result.insert(rel_str, (hash, chash, meta.len()));
-                            }
-                            _ => {
-                                tracing::warn!("Failed to read {}", rel.display());
-                            }
-                        }
+                        scan_file(&path, rel.to_string_lossy().to_string());
                     }
                 }
             }
@@ -443,15 +471,7 @@ impl FilesystemDetector {
                     if is_config_file(&rel_str) {
                         continue;
                     }
-                    match (compute_sha256(&file), file.metadata()) {
-                        (Ok(hash), Ok(meta)) => {
-                            let chash = compute_content_hash(&file);
-                            result.insert(rel_str, (hash, chash, meta.len()));
-                        }
-                        _ => {
-                            tracing::warn!("Failed to read {}", rel.display());
-                        }
-                    }
+                    scan_file(&file, rel_str);
                 }
             }
         }
@@ -479,7 +499,7 @@ impl FilesystemDetector {
             }
         }
 
-        for (rel_path, (file_hash, content_hash, file_size)) in &current_state {
+        for (rel_path, (file_hash, file_size)) in &current_state {
             let location = get_location(rel_path);
 
             // Stray detection: unknown file in non-eligible location
@@ -501,11 +521,15 @@ impl FilesystemDetector {
                 }
             }
 
+            // Only compute content hash for files that are genuinely new or changed
+            let abs_path = self.root.join(rel_path);
+            let content_hash = compute_content_hash(&abs_path);
+
             changes.push(ChangeItem {
                 event_type: EventType::Addition,
                 path: rel_path.clone(),
                 hash: Some(file_hash.clone()),
-                content_hash: content_hash.clone(),
+                content_hash,
                 size: Some(*file_size),
             });
         }
@@ -537,10 +561,21 @@ impl FilesystemDetector {
             }
         }
 
-        // Update previous state
+        // Update previous state with metadata for cache-aware scanning
         self.previous_state = current_state
             .into_iter()
-            .map(|(path, (hash, _, _))| (path, hash))
+            .map(|(path, (hash, size))| {
+                let mtime_secs = self
+                    .root
+                    .join(&path)
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                (path, (hash, size, mtime_secs))
+            })
             .collect();
 
         changes
@@ -612,7 +647,9 @@ impl FilesystemDetector {
                     }
                 } else {
                     // Known file -- skip if hash unchanged (spurious inotify event)
-                    if self.previous_state.get(rel_path) == Some(&file_hash) {
+                    if self.previous_state.get(rel_path).map(|(h, _, _)| h.as_str())
+                        == Some(&file_hash)
+                    {
                         continue;
                     }
                 }
@@ -627,7 +664,15 @@ impl FilesystemDetector {
                 });
 
                 // Update state
-                self.previous_state.insert(rel_path.clone(), file_hash);
+                let mtime_secs = abs_path
+                    .metadata()
+                    .ok()
+                    .and_then(|m| m.modified().ok())
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                self.previous_state
+                    .insert(rel_path.clone(), (file_hash, file_size, mtime_secs));
             } else {
                 // File gone
                 if was_known {
