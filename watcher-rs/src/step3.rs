@@ -271,26 +271,27 @@ impl Processor {
                 .unwrap_or("file")
                 .to_string();
 
+            // If context is pre-set (e.g., from sorted/), filter to that context
+            let all_contexts = self.contexts.clone().unwrap_or_default();
+            let contexts = if let Some(ref ctx) = record.context {
+                let filtered: Vec<serde_json::Value> = all_contexts
+                    .iter()
+                    .filter(|c| c.get("name").and_then(|n| n.as_str()) == Some(ctx.as_str()))
+                    .cloned()
+                    .collect();
+                if filtered.is_empty() {
+                    all_contexts
+                } else {
+                    filtered
+                }
+            } else {
+                all_contexts
+            };
+
             let result: Option<serde_json::Value> = if is_aud {
-                self.process_audio(&file_bytes, &filename, content_type)
+                self.process_audio(&file_bytes, &filename, content_type, &contexts)
                     .await?
             } else {
-                // If context is pre-set (e.g., from sorted/), filter to that context
-                let all_contexts = self.contexts.clone().unwrap_or_default();
-                let contexts = if let Some(ref ctx) = record.context {
-                    let filtered: Vec<serde_json::Value> = all_contexts
-                        .iter()
-                        .filter(|c| c.get("name").and_then(|n| n.as_str()) == Some(ctx.as_str()))
-                        .cloned()
-                        .collect();
-                    if filtered.is_empty() {
-                        all_contexts
-                    } else {
-                        filtered
-                    }
-                } else {
-                    all_contexts
-                };
                 self.call_service(&file_bytes, &filename, content_type, "document", &contexts)
                     .await?
             };
@@ -425,6 +426,7 @@ impl Processor {
         file_bytes: &[u8],
         filename: &str,
         content_type: &str,
+        contexts: &[serde_json::Value],
     ) -> Result<Option<serde_json::Value>> {
         // Check prerequisites
         let stt_url = match &self.stt_url {
@@ -444,7 +446,7 @@ impl Processor {
         };
 
         // Step 1: Classify audio by filename (optional)
-        let keyterms = self.classify_audio(filename).await;
+        let keyterms = self.classify_audio(filename, contexts).await;
 
         // Step 2: First STT pass (required)
         let transcript = self
@@ -488,6 +490,7 @@ impl Processor {
                     content_type,
                     &stt_config,
                     &transcript,
+                    contexts,
                 )
                 .await;
             transcript = new_transcript;
@@ -495,18 +498,18 @@ impl Processor {
         }
 
         // Step 4: Process transcript (required)
-        self.process_transcript(&transcript, filename, pre_classified.as_ref())
+        self.process_transcript(&transcript, filename, pre_classified.as_ref(), contexts)
             .await
     }
 
     /// Classify audio by filename to get transcription keyterms.
     ///
     /// Optional -- failure returns `None` (processing continues without keyterms).
-    async fn classify_audio(&self, filename: &str) -> Option<Vec<String>> {
+    async fn classify_audio(&self, filename: &str, contexts: &[serde_json::Value]) -> Option<Vec<String>> {
         let result: Result<Option<Vec<String>>> = async {
             let request_body = serde_json::json!({
                 "filename": filename,
-                "contexts": self.contexts.clone(),
+                "contexts": contexts,
             });
 
             let url = format!("{}/classify_audio", self.service_url);
@@ -621,6 +624,7 @@ impl Processor {
         content_type: &str,
         stt_config: &SttConfig,
         transcript: &serde_json::Value,
+        contexts: &[serde_json::Value],
     ) -> (serde_json::Value, Option<serde_json::Value>) {
         info!(
             "Intro file detected, starting two-pass flow for {}",
@@ -634,7 +638,7 @@ impl Processor {
             let request_body = serde_json::json!({
                 "transcript": transcript,
                 "filename": filename,
-                "contexts": self.contexts.clone(),
+                "contexts": contexts,
             });
 
             let url = format!("{}/classify_transcript", self.service_url);
@@ -751,6 +755,7 @@ impl Processor {
         transcript: &serde_json::Value,
         filename: &str,
         pre_classified: Option<&serde_json::Value>,
+        contexts: &[serde_json::Value],
     ) -> Result<Option<serde_json::Value>> {
         let stem = Path::new(filename)
             .file_stem()
@@ -760,7 +765,7 @@ impl Processor {
         let mut request_body = serde_json::json!({
             "transcript": transcript,
             "filename": stem,
-            "contexts": self.contexts.clone(),
+            "contexts": contexts,
             "user_dir": self.root.to_string_lossy(),
         });
 

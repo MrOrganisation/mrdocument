@@ -400,7 +400,7 @@ def atomic_copy(src: Path, dest: Path) -> None:
     for debounce delays.
     """
     tmp = dest.with_suffix(dest.suffix + ".tmp")
-    shutil.copyfile(src, tmp)
+    shutil.copy(src, tmp)
     os.rename(str(tmp), str(dest))
 
 

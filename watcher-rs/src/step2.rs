@@ -135,6 +135,11 @@ pub fn compute_target_path(
             if let Some(ref metadata) = record.metadata {
                 let mut parts: Vec<String> = Vec::new();
                 for field in folders {
+                    // Always use record.context for "context" field (authoritative)
+                    if field == "context" {
+                        parts.push(context.clone());
+                        continue;
+                    }
                     if let Some(value) = metadata.get(field) {
                         if let Some(s) = value.as_str() {
                             if !s.is_empty() {

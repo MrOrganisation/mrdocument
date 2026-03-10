@@ -184,6 +184,25 @@ DOCUMENT_METADATA = {
         "sender": "Keller und Partner",
         "date": "2025-12-12",
     },
+    # Sorted wrong-context tests (AI reports different context than folder)
+    "sorted_wrongctx_pdf": {
+        "context": "privat",
+        "type": "Arztbrief",
+        "sender": "Dr. Braun",
+        "date": "2025-01-10",
+    },
+    "sorted_wrongctx_txt": {
+        "context": "arbeit",
+        "type": "Vertrag",
+        "sender": "Fischer AG",
+        "date": "2025-01-15",
+    },
+    "sorted-wrongctx-audio": {
+        "context": "arbeit",
+        "type": "Besprechung",
+        "sender": "Schulze GmbH",
+        "date": "2025-01-20",
+    },
     # Video files (mov, mp4)
     "videocall": {
         "context": "arbeit",
