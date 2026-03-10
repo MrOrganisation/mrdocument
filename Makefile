@@ -1,6 +1,7 @@
 .PHONY: build up down \
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
        push push-service push-watcher push-stt push-ocrmypdf push-anthropic-adapter push-db \
+       release \
        test test-unit test-integration test-integration-syncthing test-contexts \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
        dump-db
@@ -81,6 +82,20 @@ push-anthropic-adapter:
 
 push-db:
 	docker push $(REGISTRY)/mrdocument-db:$(IMAGE_TAG)
+
+# ==============================================================================
+# Release (tag as X.y.z + latest, then push both)
+# ==============================================================================
+
+RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
+
+release: build
+	@for img in $(RELEASE_IMAGES); do \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(VERSION); \
+		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest; \
+		docker push $(REGISTRY)/$$img:$(VERSION); \
+		docker push $(REGISTRY)/$$img:latest; \
+	done
 
 # ==============================================================================
 # Tests

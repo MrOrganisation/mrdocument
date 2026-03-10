@@ -94,11 +94,15 @@ def compute_target_path(
     if folders and record.metadata:
         parts = []
         for field in folders:
-            value = record.metadata.get(field)
-            if value:
-                parts.append(str(value))
+            # Always use record.context for "context" field (authoritative)
+            if field == "context":
+                parts.append(record.context)
             else:
-                break
+                value = record.metadata.get(field)
+                if value:
+                    parts.append(str(value))
+                else:
+                    break
         if parts:
             return "sorted/" + "/".join(parts) + f"/{record.assigned_filename}"
 

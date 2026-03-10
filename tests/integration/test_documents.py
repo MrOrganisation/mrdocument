@@ -28,6 +28,7 @@ from conftest import (
     verify_filename_components,
     verify_filename_keywords,
     verify_no_filename_keywords,
+    write_test_file,
 )
 
 # ---------------------------------------------------------------------------
@@ -831,4 +832,104 @@ class TestWatcherRestart:
             expected_context=doc["context"],
             expected_date=doc["date"],
             expected_type=doc["type"],
+        )
+
+
+# ===================================================================
+# Class 9: Sorted – AI reports different context, folder context wins
+# ===================================================================
+
+SORTED_AI_DISAGREES = [
+    {
+        "id": "pdf",
+        "source_stem": "privat_arztbrief_braun",
+        "source_fmt": "pdf",
+        "test_filename": "sorted_wrongctx_pdf.pdf",
+        "ai_context": "privat",
+        "folder_context": "arbeit",
+        "date": "2025-01-10",
+        "out_ext": "pdf",
+    },
+    {
+        "id": "txt",
+        "source_stem": "arbeit_vertrag_fischer",
+        "source_fmt": "txt",
+        "test_filename": "sorted_wrongctx_txt.txt",
+        "ai_context": "arbeit",
+        "folder_context": "privat",
+        "date": "2025-01-15",
+        "out_ext": "txt",
+    },
+    {
+        "id": "m4a",
+        "source_stem": None,
+        "source_fmt": "m4a",
+        "test_filename": "sorted-wrongctx-audio.m4a",
+        "ai_context": "arbeit",
+        "folder_context": "privat",
+        "date": "2025-01-20",
+        "out_ext": "txt",
+    },
+]
+
+
+class TestSortedAiDisagrees:
+    """Test that the folder context wins when the AI reports a different context.
+
+    A document (PDF, TXT) or audio file (M4A) is placed directly into
+    sorted/{context}/.  The mock AI classifies the content as belonging
+    to a *different* context, but the system must keep the file in the
+    original folder context.
+    """
+
+    @pytest.mark.parametrize(
+        "spec",
+        SORTED_AI_DISAGREES,
+        ids=[s["id"] for s in SORTED_AI_DISAGREES],
+    )
+    def test_sorted_ai_disagrees_folder_wins(
+        self, spec, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        folder_ctx = spec["folder_context"]
+        ctx_dir = test_config.sorted_dir / folder_ctx
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        date = spec["date"]
+        out_ext = spec["out_ext"]
+
+        # Snapshot existing files so we only detect the NEW renamed file
+        existing = set(ctx_dir.rglob(f"*{date}*.{out_ext}"))
+
+        # Prepare the test file
+        dest = ctx_dir / spec["test_filename"]
+        if spec["source_stem"] is not None:
+            # Document: copy from generated, append byte for unique hash
+            src = generated_dir / f"{spec['source_stem']}.{spec['source_fmt']}"
+            assert src.exists(), f"Source file missing: {src}"
+            tmp = dest.with_suffix(dest.suffix + ".tmp")
+            tmp.write_bytes(src.read_bytes() + b"\x00")
+            tmp.rename(dest)
+        elif spec["source_fmt"] == "m4a":
+            # Audio: copy generated M4A file
+            src = generated_dir / spec["test_filename"]
+            assert src.exists(), f"Source audio missing: {src}"
+            atomic_copy(src, dest)
+
+        # Poll sorted/{folder_context}/ recursively for the renamed file
+        result = poll_for_file_recursive(
+            ctx_dir,
+            f"*{date}*.{out_ext}",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing,
+        )
+        assert result is not None, (
+            f"Renamed file not found in sorted/{folder_ctx}/ "
+            f"within {test_config.max_timeout}s (pattern: *{date}*.{out_ext})"
+        )
+
+        # Verify the output uses the FOLDER context, not the AI context
+        verify_filename_components(
+            result.name,
+            expected_context=folder_ctx,
+            expected_date=date,
         )

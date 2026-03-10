@@ -168,17 +168,19 @@ class Processor:
             file_bytes = source_path.read_bytes()
             content_type = _get_content_type(ext)
 
+            # If context is pre-set (e.g., from sorted/), filter to that context
+            contexts = self.contexts
+            if record.context:
+                filtered = [c for c in self.contexts if c.get("name") == record.context]
+                if filtered:
+                    contexts = filtered
+
             if _is_audio(ext):
                 result = await self._process_audio(
                     file_bytes, source_path.name, content_type,
+                    contexts=contexts,
                 )
             else:
-                # If context is pre-set (e.g., from sorted/), filter to that context
-                contexts = self.contexts
-                if record.context:
-                    filtered = [c for c in self.contexts if c.get("name") == record.context]
-                    if filtered:
-                        contexts = filtered
                 result = await self._call_service(
                     file_bytes, source_path.name, content_type, "document",
                     contexts=contexts,
@@ -289,11 +291,14 @@ class Processor:
         file_bytes: bytes,
         filename: str,
         content_type: str,
+        contexts: Optional[list] = None,
     ) -> Optional[dict]:
         """Orchestrate audio processing: classify → STT → process transcript.
 
         Returns the response dict on success, or None on failure.
         """
+        ctx_list = contexts if contexts is not None else self.contexts
+
         # Check prerequisites
         if not self.stt_url:
             logger.warning("Audio file %s skipped: no STT URL configured", filename)
@@ -306,7 +311,7 @@ class Processor:
 
         async with aiohttp.ClientSession() as session:
             # Step 1: Classify audio by filename (optional)
-            keyterms = await self._classify_audio(session, filename)
+            keyterms = await self._classify_audio(session, filename, contexts=ctx_list)
 
             # Step 2: First STT pass (required)
             transcript = await self._stt_transcribe(
@@ -331,27 +336,30 @@ class Processor:
             if "intro" in filename.lower():
                 transcript, pre_classified = await self._intro_two_pass(
                     session, file_bytes, filename, content_type,
-                    stt_config, transcript,
+                    stt_config, transcript, contexts=ctx_list,
                 )
 
             # Step 4: Process transcript (required)
             return await self._process_transcript(
                 session, transcript, filename, pre_classified,
+                contexts=ctx_list,
             )
 
     async def _classify_audio(
         self,
         session: aiohttp.ClientSession,
         filename: str,
+        contexts: Optional[list] = None,
     ) -> Optional[list[str]]:
         """Classify audio by filename to get transcription keyterms.
 
         Optional — failure returns None (processing continues without keyterms).
         """
+        ctx_list = contexts if contexts is not None else self.contexts
         try:
             request_body = {
                 "filename": filename,
-                "contexts": self.contexts,
+                "contexts": ctx_list,
             }
 
             def make_request(sess):
@@ -428,12 +436,14 @@ class Processor:
         content_type: str,
         stt_config: SttConfig,
         transcript: dict,
+        contexts: Optional[list] = None,
     ) -> tuple[dict, Optional[dict]]:
         """Handle intro file two-pass flow.
 
         Returns (final_transcript, pre_classified).
         Falls back to original transcript on any failure.
         """
+        ctx_list = contexts if contexts is not None else self.contexts
         logger.info("Intro file detected, starting two-pass flow for %s", filename)
         pre_classified = None
 
@@ -442,7 +452,7 @@ class Processor:
             request_body = {
                 "transcript": transcript,
                 "filename": filename,
-                "contexts": self.contexts,
+                "contexts": ctx_list,
             }
 
             def make_classify(sess):
@@ -508,12 +518,14 @@ class Processor:
         transcript: dict,
         filename: str,
         pre_classified: Optional[dict] = None,
+        contexts: Optional[list] = None,
     ) -> Optional[dict]:
         """Send transcript to mrdocument for processing."""
+        ctx_list = contexts if contexts is not None else self.contexts
         request_body: dict = {
             "transcript": transcript,
             "filename": Path(filename).stem,
-            "contexts": self.contexts,
+            "contexts": ctx_list,
             "user_dir": str(self.root),
         }
         if pre_classified:
