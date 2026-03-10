@@ -1,5 +1,6 @@
 .PHONY: build up down \
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
+       push push-service push-watcher push-stt push-ocrmypdf push-anthropic-adapter push-db \
        test test-unit test-integration test-integration-syncthing test-contexts \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
        dump-db
@@ -11,34 +12,75 @@ ENV_FILE ?= ../.env
 COMPOSE := docker compose $(if $(wildcard $(ENV_FILE)),--env-file $(ENV_FILE),)
 
 # ==============================================================================
+# Versioning
+# ==============================================================================
+
+VERSION    := $(shell cat VERSION)
+COMMIT     := $(shell git rev-parse --short HEAD)
+IMAGE_TAG  := $(VERSION)-$(COMMIT)
+REGISTRY   := ghcr.io/olekli
+
+# ==============================================================================
 # Build / Up / Down
 # ==============================================================================
+
+IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
 
 build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db
 
 build-service:
 	$(COMPOSE) build mrdocument-service --no-cache
+	docker tag mrdocument-service:latest-custom $(REGISTRY)/mrdocument-service:$(IMAGE_TAG)
 
 build-watcher:
 	$(COMPOSE) build mrdocument-watcher --no-cache
+	docker tag mrdocument-watcher:latest-custom $(REGISTRY)/mrdocument-watcher:$(IMAGE_TAG)
 
 build-stt:
 	$(COMPOSE) build stt --no-cache
+	docker tag stt:latest-custom $(REGISTRY)/stt:$(IMAGE_TAG)
 
 build-ocrmypdf:
 	$(COMPOSE) build ocrmypdf
+	docker tag ocrmypdf:latest-custom $(REGISTRY)/ocrmypdf:$(IMAGE_TAG)
 
 build-anthropic-adapter:
 	$(COMPOSE) build anthropic-adapter
+	docker tag anthropic-adapter:latest-custom $(REGISTRY)/anthropic-adapter:$(IMAGE_TAG)
 
 build-db:
 	$(COMPOSE) build mrdocument-db
+	docker tag mrdocument-db:latest-custom $(REGISTRY)/mrdocument-db:$(IMAGE_TAG)
 
 up: build
 	$(COMPOSE) up -d
 
 down:
 	$(COMPOSE) down
+
+# ==============================================================================
+# Push to GHCR
+# ==============================================================================
+
+push: push-service push-watcher push-stt push-ocrmypdf push-anthropic-adapter push-db
+
+push-service:
+	docker push $(REGISTRY)/mrdocument-service:$(IMAGE_TAG)
+
+push-watcher:
+	docker push $(REGISTRY)/mrdocument-watcher:$(IMAGE_TAG)
+
+push-stt:
+	docker push $(REGISTRY)/stt:$(IMAGE_TAG)
+
+push-ocrmypdf:
+	docker push $(REGISTRY)/ocrmypdf:$(IMAGE_TAG)
+
+push-anthropic-adapter:
+	docker push $(REGISTRY)/anthropic-adapter:$(IMAGE_TAG)
+
+push-db:
+	docker push $(REGISTRY)/mrdocument-db:$(IMAGE_TAG)
 
 # ==============================================================================
 # Tests
