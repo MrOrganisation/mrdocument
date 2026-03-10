@@ -80,6 +80,8 @@ services:
       OCR_LANGUAGE: deu+eng
       HEALTH_PORT: 8080
       WATCHER_CONFIG: /app/watcher.yaml
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       - ./testdata:/sync/testuser
       - ./watcher-fast.yaml:/app/watcher.yaml:ro

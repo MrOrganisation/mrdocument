@@ -2,7 +2,7 @@
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
        push \
        release \
-       test test-unit test-unit-rust test-integration test-integration-syncthing test-contexts \
+       test test-unit test-integration test-integration-syncthing \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
        dump-db
 
@@ -83,21 +83,18 @@ release: build
 # Tests
 # ==============================================================================
 
-test: test-unit test-unit-rust test-integration
+test: test-unit test-integration
 
-# --- Unit tests ---
-WATCHER_UNIT_TESTS := test_models.py test_prefilter.py test_step1.py test_step2.py \
-                      test_step3.py test_step4.py test_step5.py test_step6.py \
-                      test_orchestrator_race.py
-
+# --- Unit tests (Rust) ---
 test-unit:
-	cd watcher && python3 -m pytest $(WATCHER_UNIT_TESTS) -v
-
-# --- Unit tests (Rust watcher) ---
-test-unit-rust:
 	cd watcher-rs && cargo test -- --nocapture
 
 # --- Integration tests ---
+# Run the watcher container as the current host user to avoid permission issues
+# on bind-mounted directories (sorted/, archive/, etc.).
+export PUID ?= $(shell id -u)
+export PGID ?= $(shell id -g)
+
 INTEGRATION_COMPOSE := tests/integration/docker-compose.fast.yaml
 INTEGRATION_TESTS ?= test_documents.py test_audio.py test_lifecycle.py
 
@@ -176,11 +173,6 @@ test-integration-syncthing:
 	$(call integration_logs,$(SYNCTHING_COMPOSE)) ; \
 	exit $$EXIT_CODE
 
-test-contexts:
-	@echo "Running context-specific tests..."
-	$(COMPOSE) up -d mrdocument-service --wait
-	cd service && poetry run pytest tests/test_integration.py::TestAiClient::test_determine_context tests/test_integration.py::TestAiClient::test_extract_metadata_with_contexts tests/test_integration.py::TestProcessEndpoint::test_process_with_contexts tests/test_integration.py::TestUtilityFunctions -v
-
 # ==============================================================================
 # Debug / Peek
 # ==============================================================================
@@ -189,7 +181,7 @@ peek-watcher:
 	$(COMPOSE) exec -it mrdocument-watcher sh
 
 peek-service:
-	$(COMPOSE) exec -it mrdocument-service bash
+	$(COMPOSE) exec -it mrdocument-service sh
 
 peek-anthropic-adapter:
 	$(COMPOSE) exec -it anthropic-adapter sh

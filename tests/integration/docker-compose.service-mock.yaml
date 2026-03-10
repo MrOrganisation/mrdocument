@@ -76,7 +76,7 @@ services:
   mrdocument-service:
     build:
       context: ../..
-      dockerfile: Dockerfile.service
+      dockerfile: Dockerfile.service-rs
     environment:
       OCR_URL: http://mock-ocr:5000
       ANTHROPIC_BASE_URL: http://mock-anthropic:8080
@@ -110,6 +110,8 @@ services:
       OCR_LANGUAGE: deu+eng
       HEALTH_PORT: 8080
       WATCHER_CONFIG: /app/watcher.yaml
+      PUID: ${PUID:-1000}
+      PGID: ${PGID:-1000}
     volumes:
       - sync-data:/sync/testuser
       - ./watcher-test.yaml:/app/watcher.yaml:ro

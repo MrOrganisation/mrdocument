@@ -50,7 +50,7 @@ services:
   mrdocument-service:
     build:
       context: .
-      dockerfile: Dockerfile.service
+      dockerfile: Dockerfile.service-rs
       cache_from:
         - ghcr.io/mrorganisation/mrdocument-service:latest
     image: mrdocument-service:latest-custom
