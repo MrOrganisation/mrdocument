@@ -354,6 +354,32 @@ impl FilesystemDetector {
         }
     }
 
+    /// Drain self-generated event noise after a cycle.
+    ///
+    /// Empties the notification channel, then checks whether any pending
+    /// paths are *outside* `sorted/` (i.e. likely external, not from our
+    /// own symlink reconcilers).  If so, re-sends one notification so the
+    /// next `wait_for_event` fires promptly.  Paths inside `sorted/` stay
+    /// in `changed_paths` but don't wake the loop — they'll be cheaply
+    /// skipped by `detect_incremental`'s metadata/symlink checks whenever
+    /// the next real event or full-scan timer triggers a cycle.
+    pub fn drain_self_generated_events(&mut self) {
+        // 1. Drain all stale notifications.
+        if let Some(ref mut rx) = self.event_rx {
+            while rx.try_recv().is_ok() {}
+        }
+        // 2. If external (non-sorted/) paths are pending, re-notify.
+        let has_external = {
+            let set = self.changed_paths.lock().unwrap();
+            set.iter().any(|p| !p.starts_with("sorted/"))
+        };
+        if has_external {
+            if let Some(ref tx) = self.event_tx {
+                let _ = tx.try_send(());
+            }
+        }
+    }
+
     /// Check if root `smartfolders.yaml` changed and set `config_changed`.
     fn check_root_smartfolders_yaml(&mut self) {
         let sf_path = self.root.join("smartfolders.yaml");

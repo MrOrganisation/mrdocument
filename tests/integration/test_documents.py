@@ -23,6 +23,7 @@ from conftest import (
     atomic_copy,
     poll_for_file,
     poll_for_file_recursive,
+    poll_for_file_recursive_in,
     poll_for_smart_folder_symlink,
     restart_watcher,
     verify_filename_components,
@@ -569,9 +570,9 @@ class TestUnsupportedFilePrefilter:
             tmp.write_bytes(b"unsupported file content")
             tmp.rename(dest)
 
-        # Verify all land in error/
+        # Verify all land in error/ (may be in a date subdirectory)
         for fn in filenames:
-            result = poll_for_file(
+            result = poll_for_file_recursive_in(
                 test_config.error_dir,
                 f"*{fn}*",
                 test_config.poll_interval,

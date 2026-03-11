@@ -836,6 +836,11 @@ impl DocumentWatcherV2 {
             || !modified_ids.is_empty()
             || !new_records.is_empty();
 
+        // Drain event noise from our own filesystem operations (symlink
+        // creation/deletion, file moves).  Re-notifies only if there are
+        // pending events from outside sorted/ (i.e. genuinely external).
+        self.detector.drain_self_generated_events();
+
         let elapsed = t0.elapsed();
         info!(
             "[{}] Cycle done: {:.1}s (prefilter={:.2} snapshot={:.2} detect={:.2} reconcile={:.2} fs={:.2} symlink={:.2}), \

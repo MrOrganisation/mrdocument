@@ -235,8 +235,8 @@ class TestStrayArchive:
         stray_path = test_config.archive_dir / stray_name
         write_test_file(stray_path, "This is an unknown stray file in archive")
 
-        # Should be moved to error/
-        result = poll_for_file(
+        # Should be moved to error/ (may be in a date subdirectory)
+        result = poll_for_file_recursive_in(
             test_config.error_dir,
             f"*{stray_name.replace('.pdf', '')}*",
             test_config.poll_interval,
@@ -570,8 +570,8 @@ class TestErrorHandlingAndRecovery:
         tmp.write_bytes(b"")
         tmp.rename(dest)
 
-        # Source should end up in error/
-        error_file = poll_for_file(
+        # Source should end up in error/ (may be in a date subdirectory)
+        error_file = poll_for_file_recursive_in(
             test_config.error_dir,
             f"*{file_stem}*",
             test_config.poll_interval,
