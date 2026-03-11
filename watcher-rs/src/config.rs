@@ -181,6 +181,7 @@ pub enum SmartFolderCondition {
     /// Leaf: case-insensitive regex full-match on a single field.
     Statement {
         field: String,
+        #[allow(dead_code)]
         value: String,
         compiled: Option<Regex>,
     },

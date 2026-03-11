@@ -281,12 +281,14 @@ impl Record {
     }
 
     /// Location-path component of the most recent source path.
+    #[allow(dead_code)]
     pub fn source_location_path(&self) -> Option<String> {
         self.source_file()
             .map(|sf| Self::decompose_path(&sf.path).1)
     }
 
     /// Filename component of the most recent source path.
+    #[allow(dead_code)]
     pub fn source_filename(&self) -> Option<String> {
         self.source_file()
             .map(|sf| Self::decompose_path(&sf.path).2)
@@ -299,12 +301,14 @@ impl Record {
     }
 
     /// Location-path component of the most recent current path.
+    #[allow(dead_code)]
     pub fn current_location_path(&self) -> Option<String> {
         self.current_file()
             .map(|cf| Self::decompose_path(&cf.path).1)
     }
 
     /// Filename component of the most recent current path.
+    #[allow(dead_code)]
     pub fn current_filename(&self) -> Option<String> {
         self.current_file()
             .map(|cf| Self::decompose_path(&cf.path).2)

@@ -514,11 +514,12 @@ async fn main() -> Result<()> {
 
     // 2. Logging / tracing
     let log_level = std::env::var("LOG_LEVEL").unwrap_or_else(|_| "info".into());
-    let env_filter = tracing_subscriber::EnvFilter::try_new(&log_level)
-        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    let filter_str = format!("{},lopdf=warn", log_level);
+    let env_filter = tracing_subscriber::EnvFilter::try_new(&filter_str)
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info,lopdf=warn"));
     tracing_subscriber::fmt()
         .with_env_filter(env_filter)
-        .with_target(false)
+        .with_target(true)
         .init();
 
     info!("Watcher v2 starting");
