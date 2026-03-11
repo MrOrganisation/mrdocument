@@ -20,7 +20,6 @@ if _dir not in sys.path:
 from mock_anthropic import app as _anthropic_app  # noqa: E402
 from mock_anthropic import DOCUMENT_METADATA  # noqa: E402, F401
 from mock_ocr import app as _ocr_app  # noqa: E402
-from mock_stt import app as stt_app  # noqa: E402, F401
 
 # The combined app merges OCR + Anthropic endpoints (original port 9000 layout).
 # Flask doesn't natively merge apps, so we register the OCR routes onto the

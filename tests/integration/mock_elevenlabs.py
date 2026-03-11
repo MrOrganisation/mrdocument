@@ -1,24 +1,23 @@
-"""Mock STT backend for integration tests.
+"""Mock ElevenLabs STT backend for integration tests.
 
-Provides a mock speech-to-text service that returns canned transcripts
-based on audio filename.
+Returns canned transcripts in ElevenLabs API response format
+(word-level data with speaker diarization).
 
 Endpoints:
-    GET  /health      - Health check
-    POST /transcribe  - Mock STT (returns canned transcript)
+    GET  /health              - Health check
+    POST /v1/speech-to-text   - Mock transcription (ElevenLabs format)
 
 Usage:
-    gunicorn --bind 0.0.0.0:8000 --workers 1 --timeout 60 mock_stt:app
+    gunicorn --bind 0.0.0.0:8080 --workers 1 --timeout 60 mock_elevenlabs:app
 """
 
 import re
 
 from flask import Flask, jsonify, request
 
-app = Flask("mock_stt")
+app = Flask("mock_elevenlabs")
 
 # Canned transcripts keyed by audio filename stem.
-# Each value is the full text that the mock STT "transcribes".
 AUDIO_TRANSCRIPTS = {
     "besprechung-intro": (
         "Aufnahme vom fuenfzehnten Maerz zweitausendundfuenfundzwanzig. "
@@ -65,44 +64,45 @@ AUDIO_TRANSCRIPTS = {
 }
 
 
-def _make_transcript(text: str) -> dict:
-    """Build a minimal STT transcript response with segments."""
-    words = text.split()
-    # Create one segment per ~20 words
-    segments = []
-    chunk_size = 20
+def _make_elevenlabs_response(text, language_code="deu"):
+    """Build an ElevenLabs-format response with word-level data."""
+    raw_words = text.split()
+    words = []
     t = 0.0
-    for i in range(0, len(words), chunk_size):
-        chunk = " ".join(words[i:i + chunk_size])
-        start = t
-        duration = len(chunk) * 0.05  # ~50ms per char
-        end = start + duration
-        segments.append({
-            "start": round(start, 2),
-            "end": round(end, 2),
-            "text": chunk,
-            "speaker": "SPEAKER_00",
+    for w in raw_words:
+        duration = len(w) * 0.05  # ~50ms per character
+        words.append({
+            "text": w,
+            "start": round(t, 3),
+            "end": round(t + duration, 3),
+            "type": "word",
+            "speaker_id": "speaker_0",
         })
-        t = end + 0.5  # 500ms gap between segments
-    return {"segments": segments}
+        t += duration + 0.08  # small gap between words
+
+    return {
+        "language_code": language_code,
+        "text": text,
+        "words": words,
+    }
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "healthy", "service": "mock-stt"})
+    return jsonify({"status": "healthy", "service": "mock-elevenlabs"})
 
 
-@app.route("/transcribe", methods=["POST"])
-def mock_transcribe():
-    """Return a canned transcript based on the uploaded filename."""
+@app.route("/v1/speech-to-text", methods=["POST"])
+def mock_speech_to_text():
+    """Return a canned transcript in ElevenLabs API response format."""
     if "file" not in request.files:
-        return jsonify({"error": "No file provided"}), 400
+        return jsonify({"detail": {"message": "No file provided"}}), 400
 
     uploaded = request.files["file"]
     filename = uploaded.filename or "unknown.mp3"
     stem = re.sub(r"\.[^.]+$", "", filename)
 
+    language_code = request.form.get("language_code", "deu")
     text = AUDIO_TRANSCRIPTS.get(stem, f"Mock transcript for {filename}.")
-    transcript = _make_transcript(text)
 
-    return jsonify({"transcript": transcript})
+    return jsonify(_make_elevenlabs_response(text, language_code))

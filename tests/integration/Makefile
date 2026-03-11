@@ -23,8 +23,8 @@ mock-down:
 mock-logs:
 	docker compose -f docker-compose.service-mock.yaml logs -f
 
-MOCK_TESTS ?= test_documents.py test_audio.py
-FAST_TESTS ?= test_documents.py test_audio.py
+MOCK_TESTS ?= test_stt.py test_documents.py test_audio.py
+FAST_TESTS ?= test_stt.py test_documents.py test_audio.py
 
 mock-test:
 	SYNCTHING=1 poetry run pytest $(MOCK_TESTS) -v

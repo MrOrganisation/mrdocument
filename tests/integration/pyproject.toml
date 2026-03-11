@@ -9,6 +9,7 @@ package-mode = false
 python = "^3.10"
 pytest = "^7.4.0"
 pytest-timeout = "^2.2.0"
+requests = "^2.31.0"
 pyyaml = "^6.0"
 reportlab = "^4.0.0"
 gtts = "^2.5.0"

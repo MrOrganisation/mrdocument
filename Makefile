@@ -96,10 +96,10 @@ export PUID ?= $(shell id -u)
 export PGID ?= $(shell id -g)
 
 INTEGRATION_COMPOSE := tests/integration/docker-compose.fast.yaml
-INTEGRATION_TESTS ?= test_documents.py test_audio.py test_lifecycle.py
+INTEGRATION_TESTS ?= test_stt.py test_documents.py test_audio.py test_lifecycle.py
 
 SYNCTHING_COMPOSE := tests/integration/docker-compose.service-mock.yaml
-SYNCTHING_TESTS ?= test_migration.py test_documents.py test_audio.py
+SYNCTHING_TESTS ?= test_stt.py test_migration.py test_documents.py test_audio.py
 
 TESTDATA_DIRS := incoming processed archive reviewed sorted duplicates error unsortable void transit trash .output lost
 

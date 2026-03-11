@@ -13,8 +13,8 @@ from . import Backend, TranscriptionJob
 
 logger = logging.getLogger(__name__)
 
-# ElevenLabs API base URL
-API_BASE = "https://api.elevenlabs.io/v1"
+# ElevenLabs API base URL (override with ELEVENLABS_BASE_URL env var)
+API_BASE = os.environ.get("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io/v1")
 
 # Model options
 # See: https://elevenlabs.io/docs/api-reference/speech-to-text/convert
@@ -74,6 +74,7 @@ class ElevenLabsBackend(Backend):
         speaker_count: int = 2,
         enable_word_timestamps: bool = False,
         keyterms: Optional[list[str]] = None,
+        original_filename: Optional[str] = None,
         **kwargs,
     ) -> TranscriptionJob:
         """
@@ -97,9 +98,10 @@ class ElevenLabsBackend(Backend):
         lang_code = language.split("-")[0].lower() if "-" in language else language.lower()
 
         # Prepare multipart form data
+        upload_name = original_filename or audio_path.name
         with open(audio_path, "rb") as f:
             files = {
-                "file": (audio_path.name, f, "audio/flac"),
+                "file": (upload_name, f, "audio/flac"),
             }
             data = {
                 "model_id": self.model,

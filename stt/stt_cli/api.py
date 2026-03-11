@@ -69,6 +69,7 @@ async def transcribe(
         tmp.write(content)
         tmp_path = Path(tmp.name)
 
+    converted_path: Optional[Path] = None
     try:
         # Check file format
         if not is_supported(tmp_path) and not needs_conversion(tmp_path):
@@ -80,7 +81,6 @@ async def transcribe(
 
         # Convert if necessary
         process_path = tmp_path
-        converted_path: Optional[Path] = None
 
         if needs_conversion(tmp_path):
             logger.info("Converting %s to FLAC (uploaded as %s, %d bytes)...",
@@ -111,6 +111,7 @@ async def transcribe(
                 speaker_count=diarization_speaker_count,
                 enable_word_timestamps=enable_word_timestamps,
                 keyterms=keyterms_list,
+                original_filename=file.filename,
             )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))

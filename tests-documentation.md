@@ -203,7 +203,8 @@ Integration tests run against a real Docker stack. The mrdocument-service is **n
 - `mrdocument-service` -- Real service with mock Anthropic/OCR backends.
 - `mrdocument-watcher` -- Real watcher watching `./testdata` mounted at `/sync/testuser`.
 - `mrdocument-db` -- PostgreSQL 17.
-- `mock-anthropic`, `mock-ocr`, `mock-stt` -- Mock adapter services.
+- `mock-anthropic`, `mock-ocr`, `mock-elevenlabs` -- Mock adapter services.
+- `stt` -- Real STT service using mock-elevenlabs as backend.
 
 **Test configuration:**
 - `test_config.yaml` / `test_config_fast.yaml` -- `sync_folder`, `poll_interval`, `max_timeout`.
