@@ -659,6 +659,27 @@ impl FilesystemDetector {
             let was_known = self.previous_state.contains_key(rel_path);
 
             if abs_path.is_file() && !abs_path.is_symlink() {
+                // For known files, skip if metadata (size + mtime) is unchanged.
+                // This avoids expensive SHA-256 computation on spurious inotify events.
+                if was_known {
+                    if let Ok(meta) = abs_path.metadata() {
+                        let size = meta.len();
+                        let mtime_secs = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                            .unwrap_or(0);
+                        if let Some((_, cached_size, cached_mtime)) =
+                            self.previous_state.get(rel_path)
+                        {
+                            if *cached_size == size && *cached_mtime == mtime_secs {
+                                continue;
+                            }
+                        }
+                    }
+                }
+
                 // File exists -- hash it
                 let (file_hash, file_size) = match (
                     compute_sha256(&abs_path),
@@ -679,13 +700,6 @@ impl FilesystemDetector {
                         } else {
                             self.move_to_error(rel_path);
                         }
-                        continue;
-                    }
-                } else {
-                    // Known file -- skip if hash unchanged (spurious inotify event)
-                    if self.previous_state.get(rel_path).map(|(h, _, _)| h.as_str())
-                        == Some(&file_hash)
-                    {
                         continue;
                     }
                 }
