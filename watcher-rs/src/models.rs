@@ -191,6 +191,9 @@ pub struct Record {
 
     // Owner
     pub username: Option<String>,
+
+    // Timestamps (read-only from DB; not written back by save_record)
+    pub updated_at: Option<DateTime<Utc>>,
 }
 
 impl Record {
@@ -218,6 +221,7 @@ impl Record {
             duplicate_sources: Vec::new(),
             deleted_paths: Vec::new(),
             username: None,
+            updated_at: None,
         }
     }
 

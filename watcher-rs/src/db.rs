@@ -250,6 +250,7 @@ impl Database {
         let duplicate_sources_json: serde_json::Value = row.try_get("duplicate_sources")?;
         let deleted_paths_json: serde_json::Value = row.try_get("deleted_paths")?;
         let username: Option<String> = row.try_get("username")?;
+        let updated_at: Option<DateTime<Utc>> = row.try_get("updated_at").ok();
 
         let duplicate_sources: Vec<String> = duplicate_sources_json
             .as_array()
@@ -291,6 +292,7 @@ impl Database {
             duplicate_sources,
             deleted_paths,
             username,
+            updated_at,
         })
     }
 

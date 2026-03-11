@@ -406,11 +406,15 @@ async fn backfill_content_hashes(db: &Database, root: &Path, username: &str) -> 
 /// After content-hash backfill, enforce the **content-hash uniqueness
 /// invariant**: every non-NULL value in `source_content_hash` or
 /// `content_hash` must be unique across *both* columns and all records.
+/// Records sharing `source_hash` or `hash` are also grouped.
 ///
-/// Records that share a content-hash value (even across columns) are
-/// grouped via union-find.  For each group the first record (by DB
-/// snapshot order) is kept; loser records have their source and processed
-/// files moved to `duplicates/` and are deleted from the database.
+/// Records are grouped via union-find on all four hash columns.  For each
+/// group the **winner** is chosen by:
+///   1. Records whose processed file is under `sorted/` take priority.
+///   2. Among equals, the most recently updated record wins.
+///
+/// Loser records have their source and processed files moved to
+/// `duplicates/` and are deleted from the database.
 async fn deduplicate_after_backfill(db: &Database, root: &Path, username: &str) -> Result<()> {
     use std::collections::HashMap;
 
@@ -423,38 +427,50 @@ async fn deduplicate_after_backfill(db: &Database, root: &Path, username: &str) 
     // --- Union-find helpers (path-compressed, inline) ----------------------
     let mut parent: Vec<usize> = (0..n).collect();
 
-    fn find(parent: &mut [usize], mut i: usize) -> usize {
+    fn uf_find(parent: &mut [usize], mut i: usize) -> usize {
         while parent[i] != i {
             parent[i] = parent[parent[i]]; // path halving
             i = parent[i];
         }
         i
     }
-    fn union(parent: &mut [usize], a: usize, b: usize) {
-        let ra = find(parent, a);
-        let rb = find(parent, b);
+    fn uf_union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = uf_find(parent, a);
+        let rb = uf_find(parent, b);
         if ra != rb {
-            // Keep the smaller index as root (= first in snapshot = winner)
-            if ra < rb {
-                parent[rb] = ra;
-            } else {
-                parent[ra] = rb;
-            }
+            parent[rb] = ra;
         }
     }
 
-    // --- Build equivalence classes from both content-hash columns ----------
-    // Map content-hash value → first record index that introduced it
+    // --- Build equivalence classes from all hash columns -------------------
     let mut seen: HashMap<String, usize> = HashMap::new();
 
     for (i, record) in snapshot.iter().enumerate() {
+        // source_hash and hash (exact-file hashes)
+        if !record.source_hash.is_empty() {
+            if let Some(&prev) = seen.get(&record.source_hash) {
+                uf_union(&mut parent, prev, i);
+            } else {
+                seen.insert(record.source_hash.clone(), i);
+            }
+        }
+        if let Some(ref h) = record.hash {
+            if !h.is_empty() {
+                if let Some(&prev) = seen.get(h.as_str()) {
+                    uf_union(&mut parent, prev, i);
+                } else {
+                    seen.insert(h.clone(), i);
+                }
+            }
+        }
+        // content hashes (unique across both columns)
         for ch in [&record.source_content_hash, &record.content_hash] {
             if let Some(ref val) = ch {
                 if val.is_empty() {
                     continue;
                 }
                 if let Some(&prev) = seen.get(val.as_str()) {
-                    union(&mut parent, prev, i);
+                    uf_union(&mut parent, prev, i);
                 } else {
                     seen.insert(val.clone(), i);
                 }
@@ -465,59 +481,44 @@ async fn deduplicate_after_backfill(db: &Database, root: &Path, username: &str) 
     // --- Collect groups with > 1 member ------------------------------------
     let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..n {
-        let root_idx = find(&mut parent, i);
+        let root_idx = uf_find(&mut parent, i);
         groups.entry(root_idx).or_default().push(i);
     }
 
     let mut deduplicated = 0u32;
 
-    for (winner_idx, members) in &groups {
+    for (_root_idx, members) in &groups {
         if members.len() < 2 {
             continue;
         }
 
-        let winner = &snapshot[*winner_idx];
+        // Pick the winner from the group
+        let group_records: Vec<&Record> = members.iter().map(|&i| &snapshot[i]).collect();
+        let local_winner = pick_dedup_winner(&group_records);
+        let winner_idx = members[local_winner];
+        let winner = &snapshot[winner_idx];
         info!(
-            "[{}] Content-hash dedup group: {} records (winner: {})",
+            "[{}] Dedup group: {} records, winner: {} ({})",
             username,
             members.len(),
             winner.original_filename,
+            winner.current_location().unwrap_or_else(|| "-".into()),
         );
 
         for &idx in members {
-            if idx == *winner_idx {
+            if idx == winner_idx {
                 continue;
             }
             let loser = &snapshot[idx];
 
             // Move source files to duplicates/
             for pe in &loser.source_paths {
-                let src = root.join(&pe.path);
-                let (location, location_path, filename) = Record::decompose_path(&pe.path);
-                let dest = if location_path.is_empty() {
-                    root.join("duplicates").join(&location).join(&filename)
-                } else {
-                    root.join("duplicates")
-                        .join(&location)
-                        .join(&location_path)
-                        .join(&filename)
-                };
-                move_file(&src, &dest);
+                move_to_duplicates(root, &pe.path);
             }
 
             // Move processed files to duplicates/
             for pe in &loser.current_paths {
-                let src = root.join(&pe.path);
-                let (location, location_path, filename) = Record::decompose_path(&pe.path);
-                let dest = if location_path.is_empty() {
-                    root.join("duplicates").join(&location).join(&filename)
-                } else {
-                    root.join("duplicates")
-                        .join(&location)
-                        .join(&location_path)
-                        .join(&filename)
-                };
-                move_file(&src, &dest);
+                move_to_duplicates(root, &pe.path);
             }
 
             info!(
@@ -536,6 +537,43 @@ async fn deduplicate_after_backfill(db: &Database, root: &Path, username: &str) 
         );
     }
     Ok(())
+}
+
+/// Pick the winner from a group of duplicate records.
+///
+/// Priority:
+///   1. Records with a processed file under `sorted/` beat others.
+///   2. Among equals, the most recently updated record wins.
+///
+/// Returns the index *within `group`* of the winning record.
+fn pick_dedup_winner(group: &[&Record]) -> usize {
+    group
+        .iter()
+        .enumerate()
+        .max_by(|(_, a), (_, b)| {
+            let a_sorted = a.current_location().as_deref() == Some("sorted");
+            let b_sorted = b.current_location().as_deref() == Some("sorted");
+            a_sorted
+                .cmp(&b_sorted)
+                .then_with(|| a.updated_at.cmp(&b.updated_at))
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0)
+}
+
+/// Move a single file into `duplicates/{location}/{location_path}/{filename}`.
+fn move_to_duplicates(root: &Path, rel_path: &str) {
+    let src = root.join(rel_path);
+    let (location, location_path, filename) = Record::decompose_path(rel_path);
+    let dest = if location_path.is_empty() {
+        root.join("duplicates").join(&location).join(&filename)
+    } else {
+        root.join("duplicates")
+            .join(&location)
+            .join(&location_path)
+            .join(&filename)
+    };
+    move_file(&src, &dest);
 }
 
 // ---------------------------------------------------------------------------
@@ -786,4 +824,91 @@ async fn main() -> Result<()> {
 
     info!("Watcher v2 stopped");
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::models::{PathEntry, Record, State};
+    use chrono::{TimeZone, Utc};
+
+    fn make_record_at(
+        filename: &str,
+        hash: &str,
+        current_path: Option<&str>,
+        updated: &str,
+    ) -> Record {
+        let mut r = Record::new(filename.into(), hash.into());
+        r.state = State::IsComplete;
+        r.updated_at = Some(updated.parse::<chrono::DateTime<Utc>>().unwrap());
+        if let Some(cp) = current_path {
+            r.current_paths.push(PathEntry {
+                path: cp.into(),
+                timestamp: Utc::now(),
+            });
+        }
+        r
+    }
+
+    #[test]
+    fn test_pick_dedup_winner_sorted_beats_processed() {
+        let a = make_record_at("a.pdf", "h1", Some("processed/a.pdf"), "2025-01-01T00:00:00Z");
+        let b = make_record_at("b.pdf", "h2", Some("sorted/arbeit/b.pdf"), "2025-01-01T00:00:00Z");
+        let group: Vec<&Record> = vec![&a, &b];
+        assert_eq!(pick_dedup_winner(&group), 1, "sorted/ should win");
+    }
+
+    #[test]
+    fn test_pick_dedup_winner_most_recent_wins() {
+        let a = make_record_at("a.pdf", "h1", Some("sorted/arbeit/a.pdf"), "2025-01-01T00:00:00Z");
+        let b = make_record_at("b.pdf", "h2", Some("sorted/arbeit/b.pdf"), "2025-06-01T00:00:00Z");
+        let group: Vec<&Record> = vec![&a, &b];
+        assert_eq!(pick_dedup_winner(&group), 1, "newer updated_at should win");
+    }
+
+    #[test]
+    fn test_pick_dedup_winner_sorted_beats_newer_processed() {
+        let old_sorted =
+            make_record_at("a.pdf", "h1", Some("sorted/arbeit/a.pdf"), "2025-01-01T00:00:00Z");
+        let new_processed =
+            make_record_at("b.pdf", "h2", Some("processed/b.pdf"), "2025-12-01T00:00:00Z");
+        let group: Vec<&Record> = vec![&old_sorted, &new_processed];
+        assert_eq!(
+            pick_dedup_winner(&group),
+            0,
+            "sorted/ should beat processed/ even when older"
+        );
+    }
+
+    #[test]
+    fn test_pick_dedup_winner_three_records() {
+        let processed =
+            make_record_at("a.pdf", "h1", Some("processed/a.pdf"), "2025-06-01T00:00:00Z");
+        let old_sorted =
+            make_record_at("b.pdf", "h2", Some("sorted/arbeit/b.pdf"), "2025-01-01T00:00:00Z");
+        let new_sorted =
+            make_record_at("c.pdf", "h3", Some("sorted/privat/c.pdf"), "2025-09-01T00:00:00Z");
+        let group: Vec<&Record> = vec![&processed, &old_sorted, &new_sorted];
+        assert_eq!(
+            pick_dedup_winner(&group),
+            2,
+            "newest sorted/ record should win"
+        );
+    }
+
+    #[test]
+    fn test_pick_dedup_winner_no_current_paths() {
+        let a = make_record_at("a.pdf", "h1", None, "2025-01-01T00:00:00Z");
+        let b = make_record_at("b.pdf", "h2", None, "2025-06-01T00:00:00Z");
+        let group: Vec<&Record> = vec![&a, &b];
+        assert_eq!(
+            pick_dedup_winner(&group),
+            1,
+            "with no current paths, newer should win"
+        );
+    }
 }

@@ -838,128 +838,265 @@ class TestMigrationDedup:
     but different metadata.  On watcher restart the backfill computes the
     content hashes and the post-backfill dedup removes the duplicates.
 
-    Expected: only one record survives; the other two records' source
-    (archive) and processed (sorted) files are moved to ``duplicates/``.
+    Winner selection:
+      1. Records with processed file under ``sorted/`` beat others.
+      2. Among equals, the most recently updated record wins.
     """
 
-    def test_migration_dedup_by_content_hash(
-        self, test_config: TestConfig, generated_dir, clean_working_dirs,
-    ):
-        # --- Setup ----------------------------------------------------------
-        # 1. Stop the watcher so we can manipulate DB + filesystem
+    @staticmethod
+    def _stop_watcher():
         subprocess.run(
             ["docker", "stop", "integration-mrdocument-watcher-1"],
             check=True, capture_output=True, timeout=30,
         )
 
-        # 2. Prepare source PDFs (same content, different file hash)
+    @staticmethod
+    def _clear_duplicates(test_config):
+        dup_dir = test_config.duplicates_dir
+        if dup_dir.exists():
+            shutil.rmtree(dup_dir)
+        dup_dir.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _insert_record(
+        original_filename, source_hash, source_paths_json,
+        current_paths_json, assigned_filename, updated_at=None,
+    ):
+        rec_id = str(uuid.uuid4())
+        upd = f"'{updated_at}'" if updated_at else "now()"
+        db_exec(
+            f"INSERT INTO mrdocument.documents_v2 "
+            f"(id, original_filename, source_hash, "
+            f" source_content_hash, content_hash, "
+            f" source_paths, current_paths, "
+            f" context, assigned_filename, hash, "
+            f" state, username, updated_at) "
+            f"VALUES ("
+            f"  '{rec_id}', '{original_filename}', '{source_hash}', "
+            f"  NULL, NULL, "
+            f"  '{source_paths_json}'::jsonb, '{current_paths_json}'::jsonb, "
+            f"  'arbeit', '{assigned_filename}', '{source_hash}', "
+            f"  'is_complete', 'testuser', {upd}"
+            f")"
+        )
+
+    @staticmethod
+    def _poll_record_count(pattern, expected, poll_interval, timeout):
+        deadline = time.monotonic() + timeout
+        count = None
+        while time.monotonic() < deadline:
+            count = db_exec(
+                f"SELECT count(*) FROM mrdocument.documents_v2 "
+                f"WHERE original_filename LIKE '{pattern}'"
+            )
+            if count == str(expected):
+                return count
+            time.sleep(poll_interval)
+        return count
+
+    # -----------------------------------------------------------------
+    # Test 1: sorted/ record beats processed/ records
+    # -----------------------------------------------------------------
+    def test_migration_dedup_sorted_wins(
+        self, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        self._stop_watcher()
+        self._clear_duplicates(test_config)
+
         variants = ["dedup_variant_a", "dedup_variant_b", "dedup_variant_c"]
         file_hashes = {}
         for v in variants:
             src = generated_dir / f"{v}.pdf"
             assert src.exists(), f"Generated PDF missing: {src}"
-            # Copy to archive/
-            dest = test_config.archive_dir / f"{v}.pdf"
-            shutil.copy2(str(src), str(dest))
-            # SHA-256 of source file
-            h = hashlib.sha256(src.read_bytes()).hexdigest()
-            file_hashes[v] = h
+            shutil.copy2(str(src), str(test_config.archive_dir / f"{v}.pdf"))
+            file_hashes[v] = hashlib.sha256(src.read_bytes()).hexdigest()
 
-        # 3. Create processed files in sorted/arbeit/
+        # variant_b goes to sorted/, a and c go to processed/
         sorted_arbeit = test_config.sorted_dir / "arbeit"
         sorted_arbeit.mkdir(parents=True, exist_ok=True)
-        processed_names = {}
-        for i, v in enumerate(variants):
-            # Use distinct assigned filenames (as if AI classified differently)
-            name = f"arbeit-rechnung-2025-03-1{5 + i}-schulze.pdf"
-            processed_names[v] = name
-            dest = sorted_arbeit / name
-            shutil.copy2(str(generated_dir / f"{v}.pdf"), str(dest))
 
-        # 4. Clear any existing test records from DB
-        db_exec(
-            "DELETE FROM mrdocument.documents_v2 "
-            "WHERE original_filename LIKE 'dedup_variant_%'"
+        processed_names = {
+            "dedup_variant_a": "arbeit-rechnung-2025-03-15-schulze.pdf",
+            "dedup_variant_b": "arbeit-rechnung-2025-03-16-schulze.pdf",
+            "dedup_variant_c": "arbeit-rechnung-2025-03-17-schulze.pdf",
+        }
+
+        # a → processed/
+        shutil.copy2(
+            str(generated_dir / "dedup_variant_a.pdf"),
+            str(test_config.processed_dir / processed_names["dedup_variant_a"]),
+        )
+        # b → sorted/arbeit/  (should be the winner)
+        shutil.copy2(
+            str(generated_dir / "dedup_variant_b.pdf"),
+            str(sorted_arbeit / processed_names["dedup_variant_b"]),
+        )
+        # c → processed/
+        shutil.copy2(
+            str(generated_dir / "dedup_variant_c.pdf"),
+            str(test_config.processed_dir / processed_names["dedup_variant_c"]),
         )
 
-        # 5. Insert 3 records simulating an old DB (no content hashes)
+        # Broad cleanup: remove any records that could share hashes with
+        # our variants (leftovers from prior test runs / watcher scans).
+        db_exec(
+            "DELETE FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%' "
+            "   OR assigned_filename IN ("
+            "       'arbeit-rechnung-2025-03-15-schulze.pdf', "
+            "       'arbeit-rechnung-2025-03-16-schulze.pdf', "
+            "       'arbeit-rechnung-2025-03-17-schulze.pdf')"
+        )
+
         ts = "2025-01-01T00:00:00Z"
         for v in variants:
-            rec_id = str(uuid.uuid4())
-            source_paths = (
-                f'[{{"path": "archive/{v}.pdf", "timestamp": "{ts}"}}]'
-            )
-            current_paths = (
-                f'[{{"path": "sorted/arbeit/{processed_names[v]}", '
-                f'"timestamp": "{ts}"}}]'
-            )
-            db_exec(
-                f"INSERT INTO mrdocument.documents_v2 "
-                f"(id, original_filename, source_hash, "
-                f" source_content_hash, content_hash, "
-                f" source_paths, current_paths, "
-                f" context, assigned_filename, hash, "
-                f" state, username) "
-                f"VALUES ("
-                f"  '{rec_id}', '{v}.pdf', '{file_hashes[v]}', "
-                f"  NULL, NULL, "
-                f"  '{source_paths}'::jsonb, '{current_paths}'::jsonb, "
-                f"  'arbeit', '{processed_names[v]}', '{file_hashes[v]}', "
-                f"  'is_complete', 'testuser'"
-                f")"
+            if v == "dedup_variant_b":
+                cp = f"sorted/arbeit/{processed_names[v]}"
+            else:
+                cp = f"processed/{processed_names[v]}"
+            self._insert_record(
+                original_filename=f"{v}.pdf",
+                source_hash=file_hashes[v],
+                source_paths_json=(
+                    f'[{{"path": "archive/{v}.pdf", "timestamp": "{ts}"}}]'
+                ),
+                current_paths_json=(
+                    f'[{{"path": "{cp}", "timestamp": "{ts}"}}]'
+                ),
+                assigned_filename=processed_names[v],
+                updated_at="2025-06-01T00:00:00Z",
             )
 
-        # Verify all 3 records exist
         count = db_exec(
             "SELECT count(*) FROM mrdocument.documents_v2 "
             "WHERE original_filename LIKE 'dedup_variant_%'"
         )
         assert count == "3", f"Expected 3 records, got {count}"
 
-        # --- Act: restart watcher -------------------------------------------
-        # 6. Start the watcher (triggers backfill + dedup)
         restart_watcher()
 
-        # --- Assert ---------------------------------------------------------
-        # 7. Poll until only 1 record remains
-        deadline = time.monotonic() + test_config.max_timeout
-        final_count = "3"
-        while time.monotonic() < deadline:
-            final_count = db_exec(
-                "SELECT count(*) FROM mrdocument.documents_v2 "
-                "WHERE original_filename LIKE 'dedup_variant_%'"
-            )
-            if final_count == "1":
-                break
-            time.sleep(test_config.poll_interval)
-
+        final_count = self._poll_record_count(
+            "dedup_variant_%", 1,
+            test_config.poll_interval, test_config.max_timeout,
+        )
         assert final_count == "1", (
             f"Expected 1 record after dedup, got {final_count}"
         )
 
-        # 8. Verify exactly 2 files moved to duplicates/
-        dup_files = list(test_config.duplicates_dir.rglob("dedup_variant_*.pdf"))
-        # Each loser produces 2 files (archive + sorted), so expect 4
-        assert len(dup_files) >= 4, (
-            f"Expected at least 4 files in duplicates/, found {len(dup_files)}: "
-            f"{[str(f) for f in dup_files]}"
-        )
-
-        # 9. Verify the surviving record's files are still in place
+        # Winner must be variant_b (the one in sorted/)
         surviving = db_exec(
             "SELECT original_filename FROM mrdocument.documents_v2 "
             "WHERE original_filename LIKE 'dedup_variant_%'"
         )
-        assert surviving, "No surviving record found"
-        survivor_stem = surviving.replace(".pdf", "")
-
-        # Source should still be in archive/
-        assert (test_config.archive_dir / f"{survivor_stem}.pdf").exists(), (
-            f"Survivor's archive file missing: {survivor_stem}.pdf"
+        assert surviving == "dedup_variant_b.pdf", (
+            f"Expected sorted/ record (variant_b) to win, got {surviving}"
         )
 
-        # Processed file should still be in sorted/arbeit/
-        survivor_processed = processed_names[survivor_stem]
-        assert (sorted_arbeit / survivor_processed).exists(), (
-            f"Survivor's sorted file missing: {survivor_processed}"
+        # Winner's files still in place
+        assert (test_config.archive_dir / "dedup_variant_b.pdf").exists()
+        assert (sorted_arbeit / processed_names["dedup_variant_b"]).exists()
+
+        # Losers' files moved to duplicates/ (archive + processed files)
+        dup_files = list(test_config.duplicates_dir.rglob("*.pdf"))
+        assert len(dup_files) >= 4, (
+            f"Expected >= 4 files in duplicates/ (2 losers x 2 files), "
+            f"found {len(dup_files)}: {[str(f) for f in dup_files]}"
+        )
+
+    # -----------------------------------------------------------------
+    # Test 2: most recent wins when all are in sorted/
+    # -----------------------------------------------------------------
+    def test_migration_dedup_most_recent_wins(
+        self, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        self._stop_watcher()
+        self._clear_duplicates(test_config)
+
+        variants = ["dedup_variant_a", "dedup_variant_b", "dedup_variant_c"]
+        file_hashes = {}
+        for v in variants:
+            src = generated_dir / f"{v}.pdf"
+            shutil.copy2(str(src), str(test_config.archive_dir / f"{v}.pdf"))
+            file_hashes[v] = hashlib.sha256(src.read_bytes()).hexdigest()
+
+        sorted_arbeit = test_config.sorted_dir / "arbeit"
+        sorted_arbeit.mkdir(parents=True, exist_ok=True)
+
+        processed_names = {
+            "dedup_variant_a": "arbeit-rechnung-2025-03-15-schulze.pdf",
+            "dedup_variant_b": "arbeit-rechnung-2025-03-16-schulze.pdf",
+            "dedup_variant_c": "arbeit-rechnung-2025-03-17-schulze.pdf",
+        }
+        for v in variants:
+            shutil.copy2(
+                str(generated_dir / f"{v}.pdf"),
+                str(sorted_arbeit / processed_names[v]),
+            )
+
+        # Broad cleanup: remove any records that could share hashes with
+        # our variants (leftovers from prior test runs / watcher scans).
+        db_exec(
+            "DELETE FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%' "
+            "   OR assigned_filename IN ("
+            "       'arbeit-rechnung-2025-03-15-schulze.pdf', "
+            "       'arbeit-rechnung-2025-03-16-schulze.pdf', "
+            "       'arbeit-rechnung-2025-03-17-schulze.pdf')"
+        )
+
+        # All in sorted/, but variant_c has the newest updated_at
+        timestamps = {
+            "dedup_variant_a": "2025-01-01T00:00:00Z",
+            "dedup_variant_b": "2025-06-01T00:00:00Z",
+            "dedup_variant_c": "2025-12-01T00:00:00Z",
+        }
+        ts = "2025-01-01T00:00:00Z"
+        for v in variants:
+            self._insert_record(
+                original_filename=f"{v}.pdf",
+                source_hash=file_hashes[v],
+                source_paths_json=(
+                    f'[{{"path": "archive/{v}.pdf", "timestamp": "{ts}"}}]'
+                ),
+                current_paths_json=(
+                    f'[{{"path": "sorted/arbeit/{processed_names[v]}", '
+                    f'"timestamp": "{ts}"}}]'
+                ),
+                assigned_filename=processed_names[v],
+                updated_at=timestamps[v],
+            )
+
+        count = db_exec(
+            "SELECT count(*) FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%'"
+        )
+        assert count == "3", f"Expected 3 records, got {count}"
+
+        restart_watcher()
+
+        final_count = self._poll_record_count(
+            "dedup_variant_%", 1,
+            test_config.poll_interval, test_config.max_timeout,
+        )
+        assert final_count == "1", (
+            f"Expected 1 record after dedup, got {final_count}"
+        )
+
+        # Winner must be variant_c (most recently updated)
+        surviving = db_exec(
+            "SELECT original_filename FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%'"
+        )
+        assert surviving == "dedup_variant_c.pdf", (
+            f"Expected newest record (variant_c) to win, got {surviving}"
+        )
+
+        assert (test_config.archive_dir / "dedup_variant_c.pdf").exists()
+        assert (sorted_arbeit / processed_names["dedup_variant_c"]).exists()
+
+        # Losers' files moved to duplicates/ (archive + sorted files)
+        dup_files = list(test_config.duplicates_dir.rglob("*.pdf"))
+        assert len(dup_files) >= 4, (
+            f"Expected >= 4 files in duplicates/ (2 losers x 2 files), "
+            f"found {len(dup_files)}: {[str(f) for f in dup_files]}"
         )
