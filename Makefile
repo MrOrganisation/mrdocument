@@ -1,5 +1,6 @@
 .PHONY: build up down \
        build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
+       build-amd64 \
        push \
        release \
        test test-unit test-integration test-integration-syncthing \
@@ -52,6 +53,73 @@ up: build
 
 down:
 	$(COMPOSE) down
+
+# ==============================================================================
+# Cross-build for linux/amd64 (from arm64 host via QEMU + buildx)
+# ==============================================================================
+# Requires: docker buildx with QEMU binfmt registered.
+#   docker run --rm --privileged tonistiigi/binfmt --install amd64
+#   docker buildx create --name multiarch --driver docker-container --use
+
+BUILDX_BUILDER ?= multiarch
+BUILDX_PLATFORM ?= linux/amd64
+
+define buildx_image
+	docker buildx build \
+		--builder $(BUILDX_BUILDER) \
+		--platform $(BUILDX_PLATFORM) \
+		-f $(1) \
+		-t $(2):latest-custom \
+		--load \
+		.
+endef
+
+build-amd64:
+	$(call buildx_image,Dockerfile.service-rs,mrdocument-service)
+	$(call buildx_image,Dockerfile.watcher,mrdocument-watcher)
+	$(call buildx_image,Dockerfile.stt,stt)
+	$(call buildx_image,Dockerfile.ocrmypdf,ocrmypdf)
+	$(call buildx_image,Dockerfile.anthropic-adapter,anthropic-adapter)
+	$(call buildx_image,Dockerfile.db,mrdocument-db)
+
+define buildx_push
+	docker buildx build \
+		--builder $(BUILDX_BUILDER) \
+		--platform $(BUILDX_PLATFORM) \
+		-f $(1) \
+		-t $(REGISTRY)/$(2):$(IMAGE_TAG) \
+		-t $(REGISTRY)/$(2):latest-$(BRANCH) \
+		--push \
+		.
+endef
+
+push-amd64:
+	$(call buildx_push,Dockerfile.service-rs,mrdocument-service)
+	$(call buildx_push,Dockerfile.watcher,mrdocument-watcher)
+	$(call buildx_push,Dockerfile.stt,stt)
+	$(call buildx_push,Dockerfile.ocrmypdf,ocrmypdf)
+	$(call buildx_push,Dockerfile.anthropic-adapter,anthropic-adapter)
+	$(call buildx_push,Dockerfile.db,mrdocument-db)
+
+release-amd64:
+	@for img in $(RELEASE_IMAGES); do \
+		df=$$(echo $$img | sed 's/mrdocument-//'); \
+		case $$img in \
+			mrdocument-service) df=Dockerfile.service-rs ;; \
+			mrdocument-watcher) df=Dockerfile.watcher ;; \
+			mrdocument-db) df=Dockerfile.db ;; \
+			*) df=Dockerfile.$$df ;; \
+		esac; \
+		docker buildx build \
+			--builder $(BUILDX_BUILDER) \
+			--platform $(BUILDX_PLATFORM) \
+			-f $$df \
+			-t $(REGISTRY)/$$img:$(IMAGE_TAG) \
+			-t $(REGISTRY)/$$img:latest-$(BRANCH) \
+			-t $(REGISTRY)/$$img:latest \
+			--push \
+			. ; \
+	done
 
 # ==============================================================================
 # Push to GHCR
