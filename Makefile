@@ -134,16 +134,13 @@ push: build
 	done
 
 # ==============================================================================
-# Release (tag as X.y.z-branch-commit + latest-branch + latest, then push all)
+# Release (retag latest-<branch> as latest, then push)
 # ==============================================================================
 
-release: build
+release:
 	@for img in $(RELEASE_IMAGES); do \
-		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
-		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest-$(BRANCH); \
-		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest; \
-		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
-		docker push $(REGISTRY)/$$img:latest-$(BRANCH); \
+		docker pull $(REGISTRY)/$$img:latest-$(BRANCH); \
+		docker tag $(REGISTRY)/$$img:latest-$(BRANCH) $(REGISTRY)/$$img:latest; \
 		docker push $(REGISTRY)/$$img:latest; \
 	done
 
