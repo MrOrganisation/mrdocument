@@ -21,9 +21,13 @@ RUN pip3 install --no-cache-dir --break-system-packages flask werkzeug gunicorn
 RUN mkdir -p /input /output /app && \
     chmod 777 /input /output
 
+ARG GIT_COMMIT=unknown
+
 # Copy API server and version file
 COPY ocrmypdf/api.py /app/api.py
 COPY VERSION /app/VERSION
+
+ENV GIT_COMMIT=${GIT_COMMIT}
 
 WORKDIR /app
 

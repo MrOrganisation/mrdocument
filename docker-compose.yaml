@@ -7,6 +7,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.ocrmypdf
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
         - ghcr.io/mrorganisation/ocrmypdf:latest
     image: ocrmypdf:latest-custom
@@ -51,6 +53,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.service-rs
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
         - ghcr.io/mrorganisation/mrdocument-service:latest
     image: mrdocument-service:latest-custom
@@ -86,6 +90,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.stt
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
         - ghcr.io/mrorganisation/stt:latest
     image: stt:latest-custom
@@ -173,6 +179,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.watcher
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
         - ghcr.io/mrorganisation/mrdocument-watcher:latest
     image: mrdocument-watcher:latest-custom

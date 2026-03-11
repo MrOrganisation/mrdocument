@@ -1029,7 +1029,7 @@ async fn main() {
             std::process::exit(1);
         });
 
-    info!("Starting MrDocument service v{} on {}:{}", env!("CARGO_PKG_VERSION"), host, port);
+    info!("Starting MrDocument service v{} (commit {}) on {}:{}", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT_HASH"), host, port);
     info!(
         "Transcript correction: model={}, extended_thinking={}, budget={}, use_batch={}",
         correction_model, correction_extended_thinking, correction_thinking_budget, correction_use_batch

@@ -730,7 +730,7 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
 
-    info!("Watcher v2 starting (version {})", env!("CARGO_PKG_VERSION"));
+    info!("Watcher v2 starting (version {}, commit {})", env!("CARGO_PKG_VERSION"), env!("GIT_COMMIT_HASH"));
 
     // 3. Database connection
     let db = Arc::new(Database::connect(&database_url).await?);

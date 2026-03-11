@@ -7,11 +7,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Create app directory
+ARG GIT_COMMIT=unknown
+
 WORKDIR /app
 
 # Copy stt application and version file
 COPY stt/ /app/
 COPY VERSION /app/VERSION
+
+ENV GIT_COMMIT=${GIT_COMMIT}
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -e .

@@ -38,7 +38,8 @@ APP_VERSION = _read_version()
 
 app = Flask(__name__)
 
-logger.info("OCRmyPDF service starting (version %s)", APP_VERSION)
+GIT_COMMIT = os.environ.get("GIT_COMMIT", "unknown")
+logger.info("OCRmyPDF service starting (version %s, commit %s)", APP_VERSION, GIT_COMMIT)
 
 # Configure upload settings
 UPLOAD_FOLDER = '/tmp/uploads'
