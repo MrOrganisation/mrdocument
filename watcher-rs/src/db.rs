@@ -7,7 +7,7 @@ use anyhow::{Context as _, Result};
 use chrono::{DateTime, Utc};
 use sqlx::postgres::{PgPool, PgPoolOptions};
 use sqlx::Row;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::models::{PathEntry, Record, State};
@@ -67,6 +67,27 @@ CREATE TABLE IF NOT EXISTS mrdocument.documents_v2 (
 DROP TABLE IF EXISTS mrdocument.file_locations;
 DROP TABLE IF EXISTS mrdocument.documents;
 
+-- Migrations for content hash columns (idempotent).
+-- Must run before CREATE INDEX so the columns exist on pre-existing tables.
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'source_content_hash'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN source_content_hash TEXT;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'content_hash'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN content_hash TEXT;
+    END IF;
+END
+$$;
+
 CREATE INDEX IF NOT EXISTS idx_docs_v2_source_hash
     ON mrdocument.documents_v2(source_hash);
 
@@ -95,26 +116,6 @@ CREATE INDEX IF NOT EXISTS idx_docs_v2_metadata
 CREATE INDEX IF NOT EXISTS idx_docs_v2_username
     ON mrdocument.documents_v2(username)
     WHERE username IS NOT NULL;
-
--- Migrations for content hash columns (idempotent)
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
-        AND column_name = 'source_content_hash'
-    ) THEN
-        ALTER TABLE mrdocument.documents_v2 ADD COLUMN source_content_hash TEXT;
-    END IF;
-    IF NOT EXISTS (
-        SELECT 1 FROM information_schema.columns
-        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
-        AND column_name = 'content_hash'
-    ) THEN
-        ALTER TABLE mrdocument.documents_v2 ADD COLUMN content_hash TEXT;
-    END IF;
-END
-$$;
 
 -- Auto-update trigger on updated_at
 CREATE OR REPLACE FUNCTION mrdocument.update_documents_v2_updated_at()
@@ -166,6 +167,7 @@ impl Database {
     }
 
     /// Ensure the schema exists (idempotent).
+    #[allow(dead_code)]
     pub async fn ensure_schema(&self) -> Result<()> {
         sqlx::raw_sql(SCHEMA_SQL)
             .execute(&self.pool)
@@ -175,6 +177,7 @@ impl Database {
     }
 
     /// Get a reference to the connection pool.
+    #[allow(dead_code)]
     pub fn pool(&self) -> &PgPool {
         &self.pool
     }
@@ -366,6 +369,7 @@ impl Database {
     }
 
     /// Get a record by ID, or None if not found.
+    #[allow(dead_code)]
     pub async fn get_record(&self, record_id: Uuid) -> Result<Option<Record>> {
         let row = sqlx::query("SELECT * FROM mrdocument.documents_v2 WHERE id = $1")
             .bind(record_id)
@@ -603,6 +607,7 @@ impl Database {
     }
 
     /// Get a record by source_hash (most recent first).
+    #[allow(dead_code)]
     pub async fn get_record_by_source_hash(
         &self,
         source_hash: &str,
@@ -627,6 +632,7 @@ impl Database {
     }
 
     /// Get a record by hash (most recent first).
+    #[allow(dead_code)]
     pub async fn get_record_by_hash(&self, hash_value: &str) -> Result<Option<Record>> {
         let row = sqlx::query(
             r#"
@@ -645,5 +651,48 @@ impl Database {
             Some(r) => Ok(Some(Self::row_to_record(&r)?)),
             None => Ok(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: CREATE INDEX on `source_content_hash` and `content_hash`
+    /// ran before the migration that adds those columns, causing a crash
+    /// on databases created before the content hash feature was added.
+    #[test]
+    fn test_schema_migration_runs_before_index_creation() {
+        let sql = SCHEMA_SQL;
+
+        // Find the positions of key statements
+        let alter_source_content_hash = sql
+            .find("ADD COLUMN source_content_hash")
+            .expect("migration for source_content_hash not found in SCHEMA_SQL");
+        let alter_content_hash = sql
+            .find("ADD COLUMN content_hash")
+            .expect("migration for content_hash not found in SCHEMA_SQL");
+
+        let index_source_content_hash = sql
+            .find("idx_docs_v2_source_content_hash")
+            .expect("index for source_content_hash not found in SCHEMA_SQL");
+        let index_content_hash = sql
+            .find("idx_docs_v2_content_hash")
+            .expect("index for content_hash not found in SCHEMA_SQL");
+
+        assert!(
+            alter_source_content_hash < index_source_content_hash,
+            "ALTER TABLE ADD COLUMN source_content_hash (pos {}) must come before \
+             CREATE INDEX idx_docs_v2_source_content_hash (pos {})",
+            alter_source_content_hash,
+            index_source_content_hash,
+        );
+        assert!(
+            alter_content_hash < index_content_hash,
+            "ALTER TABLE ADD COLUMN content_hash (pos {}) must come before \
+             CREATE INDEX idx_docs_v2_content_hash (pos {})",
+            alter_content_hash,
+            index_content_hash,
+        );
     }
 }

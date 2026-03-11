@@ -9,7 +9,7 @@ use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use crate::models::{Record, State};
 

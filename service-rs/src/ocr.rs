@@ -3,6 +3,7 @@ use reqwest::multipart;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct OcrResult {
     pub pdf_bytes: Vec<u8>,
     pub text: String,

@@ -81,6 +81,7 @@ fn get_content_type(ext: &str) -> &'static str {
 }
 
 /// Check if extension indicates an audio/video file.
+#[allow(dead_code)]
 fn is_audio(ext: &str) -> bool {
     AUDIO_EXTENSIONS.contains(&ext)
 }

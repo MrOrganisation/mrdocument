@@ -11,7 +11,7 @@ use std::fs;
 use std::os::unix::fs as unix_fs;
 use std::path::{Path, PathBuf};
 
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::config::SmartFolderConfig;
 use crate::models::{Record, State};
@@ -304,6 +304,7 @@ impl SmartFolderReconciler {
 
 /// A root-level smart folder with an arbitrary output path.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RootSmartFolderEntry {
     pub name: String,
     pub context: String,

@@ -3,11 +3,10 @@
 //! Ported from `sorter.py` – covers filename sanitisation, context/smart-folder
 //! configuration, watcher config, and the `SorterContextManager`.
 
-use anyhow::{Context as _, Result};
 use regex::Regex;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use tracing::{debug, error, info, warn};
+use tracing::{error, info, warn};
 use unicode_normalization::UnicodeNormalization;
 
 // ---------------------------------------------------------------------------
@@ -947,6 +946,7 @@ impl SorterContextManager {
     }
 
     /// Check if a value is new (not present in base or generated candidates).
+    #[allow(dead_code)]
     pub fn is_new_item(&self, context_name: &str, field_name: &str, value: &str) -> bool {
         if value.is_empty() || !self.contexts.contains_key(context_name) {
             return false;
@@ -1033,6 +1033,7 @@ impl SorterContextManager {
     }
 
     /// Record a new candidate value in the generated file.
+    #[allow(dead_code)]
     pub fn record_new_item(
         &mut self,
         context_name: &str,
@@ -1075,6 +1076,7 @@ impl SorterContextManager {
     }
 
     /// Record a new clue for an existing candidate in the generated file.
+    #[allow(dead_code)]
     pub fn record_new_clue(
         &mut self,
         context_name: &str,
@@ -1287,6 +1289,7 @@ impl SorterContextManager {
         }
     }
 
+    #[allow(dead_code)]
     fn save_generated_file(&self, context_name: &str) -> bool {
         let gen_path = match self.generated_files.get(context_name) {
             Some(p) => p,
@@ -1400,7 +1403,7 @@ impl SorterContextManager {
     /// Merge base + generated candidates for a field, returning a JSON value.
     fn get_all_candidates_json(
         &self,
-        context_name: &str,
+        _context_name: &str,
         field_name: &str,
         ctx_data: &serde_yaml::Value,
         gen_fields: &HashMap<String, serde_yaml::Value>,

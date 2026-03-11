@@ -46,6 +46,7 @@ fn find_by_source_hash<'a>(records: &'a [Record], hash_value: &str) -> Option<&'
     records.iter().find(|r| r.source_hash == hash_value)
 }
 
+#[allow(dead_code)]
 fn find_by_source_hash_mut<'a>(
     records: &'a mut [Record],
     hash_value: &str,
@@ -59,6 +60,7 @@ fn find_by_hash<'a>(records: &'a [Record], hash_value: &str) -> Option<&'a Recor
         .find(|r| r.hash.as_deref() == Some(hash_value))
 }
 
+#[allow(dead_code)]
 fn find_by_hash_mut<'a>(records: &'a mut [Record], hash_value: &str) -> Option<&'a mut Record> {
     records
         .iter_mut()
@@ -77,6 +79,7 @@ fn find_by_content_hash<'a>(records: &'a [Record], hash_value: &str) -> Option<&
         .find(|r| r.content_hash.as_deref() == Some(hash_value))
 }
 
+#[allow(dead_code)]
 fn find_by_output_filename_mut<'a>(
     records: &'a mut [Record],
     filename: &str,
@@ -2420,7 +2423,7 @@ mod tests {
             timestamp: _ts(0),
         });
 
-        let r1_id = r1.id;
+        let _r1_id = r1.id;
         let r2_id = r2.id;
         let mut records = vec![r1, r2];
         let mut new_records: Vec<Record> = Vec::new();

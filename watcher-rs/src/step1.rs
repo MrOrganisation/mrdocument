@@ -14,7 +14,7 @@ use anyhow::Result;
 use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 use uuid::Uuid;
 
 use crate::models::{ChangeItem, EventType, Record};
@@ -314,6 +314,7 @@ impl FilesystemDetector {
     }
 
     /// Stop the inotify observer.
+    #[allow(dead_code)]
     pub fn stop(&mut self) {
         if let Some(mut w) = self.watcher.take() {
             // Unwatch all paths; drop will also stop the watcher.
@@ -587,7 +588,7 @@ impl FilesystemDetector {
 
     fn detect_incremental(&mut self, db_snapshot: &[Record]) -> Vec<ChangeItem> {
         // Drain inotify events
-        let mut changed_paths: HashSet<String> = {
+        let changed_paths: HashSet<String> = {
             let mut set = self.changed_paths.lock().unwrap();
             std::mem::take(&mut *set)
         };

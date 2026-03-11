@@ -168,6 +168,7 @@ fn take_snapshot(record: &Record) -> RecordSnapshot {
 // ---------------------------------------------------------------------------
 
 /// Main orchestrator: polling cycle that ties steps 1-6 together.
+#[allow(dead_code)]
 pub struct DocumentWatcherV2 {
     pub root: PathBuf,
     pub name: String,
@@ -265,6 +266,7 @@ impl DocumentWatcherV2 {
     ///
     /// `output_path` is a relative path like `.output/uuid-123`.
     /// Returns parsed sidecar dict, or empty object if not found/parse error.
+    #[allow(dead_code)]
     fn read_sidecar(&self, output_path: &str) -> JsonValue {
         Self::read_sidecar_from_root(&self.root, &self.name, output_path)
     }
@@ -436,6 +438,7 @@ impl DocumentWatcherV2 {
     }
 
     /// Stop observer and wait for in-flight processing tasks.
+    #[allow(dead_code)]
     pub async fn shutdown(&mut self) {
         self.detector.stop();
         // In-flight tasks will naturally complete since we hold references.
