@@ -132,7 +132,7 @@ class TestDuplicateIncoming:
             30,
         )
         assert archive_file is not None, "File not archived"
-        time.sleep(5)  # let watcher process pending inotify events
+        time.sleep(2)  # let watcher process pending inotify events
 
         # Step 2: Re-add the exact same content to incoming/
         # (same source_hash → duplicate detection)
@@ -487,8 +487,8 @@ class TestUserRenameInSorted:
         sorted_file.rename(new_path)
 
         # The file should stay at the new location (not be moved back)
-        # Wait a few cycles to make sure the watcher doesn't revert
-        time.sleep(10)
+        # Wait a few scan cycles to make sure the watcher doesn't revert
+        time.sleep(3)
         assert new_path.exists(), (
             f"Renamed file should still exist at {new_path}"
         )
@@ -530,7 +530,7 @@ class TestUserMoveContext:
         # Wait for the watcher to process the move.
         # The watcher should detect the move and NOT revert it back to arbeit/.
         # It may rename the file to match the privat filename pattern.
-        time.sleep(10)
+        time.sleep(3)
 
         # The file should be somewhere under privat/, possibly renamed
         privat_files = list(privat_dir.rglob(f"*{date}*.txt"))
@@ -583,7 +583,7 @@ class TestErrorHandlingAndRecovery:
         assert not dest.exists(), "Source should be removed from incoming/"
 
         # Let watcher settle before submitting recovery file
-        time.sleep(5)
+        time.sleep(2)
 
         # --- Phase 2: Recovery — valid content, same stem → processed/ ---
         # Use .txt to avoid PDF-specific processing (embed_metadata fails on

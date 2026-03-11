@@ -546,7 +546,7 @@ def restart_watcher(timeout: float = 60) -> None:
                     return
         except (URLError, OSError):
             pass
-        time.sleep(2)
+        time.sleep(1)
     raise TimeoutError(
         f"Watcher not healthy at {WATCHER_HEALTH_URL} after {timeout}s"
     )

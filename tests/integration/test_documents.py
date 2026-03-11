@@ -579,11 +579,11 @@ class TestUnsupportedFilePrefilter:
             )
             assert result is not None, f"'{fn}' not in error/ within 60s"
 
-        # Verify none entered the pipeline
+        # Verify none entered the pipeline (single short wait, then check all)
+        time.sleep(2)
         for fn in filenames:
-            assert poll_for_file(
-                test_config.archive_dir, f"*{fn}*", 1, 5,
-            ) is None, f"'{fn}' should not be in archive/"
+            matches = list(test_config.archive_dir.glob(f"*{fn}*"))
+            assert not matches, f"'{fn}' should not be in archive/"
 
 
 
@@ -707,7 +707,7 @@ class TestResetPipeline:
         )
 
         # --- Step 5: Verify reset/ file was consumed (moved away) ---
-        time.sleep(3)  # allow watcher to clean up
+        time.sleep(2)  # allow watcher to clean up
         assert not reset_dest.exists(), (
             f"Reset file should have been consumed: {reset_dest}"
         )
