@@ -39,7 +39,9 @@ use crate::orchestrator::{
     context_field_names_from_sorter, context_folders_from_sorter,
     contexts_for_api_from_sorter, DocumentWatcherV2,
 };
+use crate::models::Record;
 use crate::step1::compute_content_hash;
+use crate::step4::move_file;
 use crate::step5::{RootSmartFolderEntry, SmartFolderEntry};
 
 // ---------------------------------------------------------------------------
@@ -398,6 +400,145 @@ async fn backfill_content_hashes(db: &Database, root: &Path, username: &str) -> 
 }
 
 // ---------------------------------------------------------------------------
+// Post-backfill deduplication
+// ---------------------------------------------------------------------------
+
+/// After content-hash backfill, enforce the **content-hash uniqueness
+/// invariant**: every non-NULL value in `source_content_hash` or
+/// `content_hash` must be unique across *both* columns and all records.
+///
+/// Records that share a content-hash value (even across columns) are
+/// grouped via union-find.  For each group the first record (by DB
+/// snapshot order) is kept; loser records have their source and processed
+/// files moved to `duplicates/` and are deleted from the database.
+async fn deduplicate_after_backfill(db: &Database, root: &Path, username: &str) -> Result<()> {
+    use std::collections::HashMap;
+
+    let snapshot = db.get_snapshot(Some(username)).await?;
+    let n = snapshot.len();
+    if n < 2 {
+        return Ok(());
+    }
+
+    // --- Union-find helpers (path-compressed, inline) ----------------------
+    let mut parent: Vec<usize> = (0..n).collect();
+
+    fn find(parent: &mut [usize], mut i: usize) -> usize {
+        while parent[i] != i {
+            parent[i] = parent[parent[i]]; // path halving
+            i = parent[i];
+        }
+        i
+    }
+    fn union(parent: &mut [usize], a: usize, b: usize) {
+        let ra = find(parent, a);
+        let rb = find(parent, b);
+        if ra != rb {
+            // Keep the smaller index as root (= first in snapshot = winner)
+            if ra < rb {
+                parent[rb] = ra;
+            } else {
+                parent[ra] = rb;
+            }
+        }
+    }
+
+    // --- Build equivalence classes from both content-hash columns ----------
+    // Map content-hash value → first record index that introduced it
+    let mut seen: HashMap<String, usize> = HashMap::new();
+
+    for (i, record) in snapshot.iter().enumerate() {
+        for ch in [&record.source_content_hash, &record.content_hash] {
+            if let Some(ref val) = ch {
+                if val.is_empty() {
+                    continue;
+                }
+                if let Some(&prev) = seen.get(val.as_str()) {
+                    union(&mut parent, prev, i);
+                } else {
+                    seen.insert(val.clone(), i);
+                }
+            }
+        }
+    }
+
+    // --- Collect groups with > 1 member ------------------------------------
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let root_idx = find(&mut parent, i);
+        groups.entry(root_idx).or_default().push(i);
+    }
+
+    let mut deduplicated = 0u32;
+
+    for (winner_idx, members) in &groups {
+        if members.len() < 2 {
+            continue;
+        }
+
+        let winner = &snapshot[*winner_idx];
+        info!(
+            "[{}] Content-hash dedup group: {} records (winner: {})",
+            username,
+            members.len(),
+            winner.original_filename,
+        );
+
+        for &idx in members {
+            if idx == *winner_idx {
+                continue;
+            }
+            let loser = &snapshot[idx];
+
+            // Move source files to duplicates/
+            for pe in &loser.source_paths {
+                let src = root.join(&pe.path);
+                let (location, location_path, filename) = Record::decompose_path(&pe.path);
+                let dest = if location_path.is_empty() {
+                    root.join("duplicates").join(&location).join(&filename)
+                } else {
+                    root.join("duplicates")
+                        .join(&location)
+                        .join(&location_path)
+                        .join(&filename)
+                };
+                move_file(&src, &dest);
+            }
+
+            // Move processed files to duplicates/
+            for pe in &loser.current_paths {
+                let src = root.join(&pe.path);
+                let (location, location_path, filename) = Record::decompose_path(&pe.path);
+                let dest = if location_path.is_empty() {
+                    root.join("duplicates").join(&location).join(&filename)
+                } else {
+                    root.join("duplicates")
+                        .join(&location)
+                        .join(&location_path)
+                        .join(&filename)
+                };
+                move_file(&src, &dest);
+            }
+
+            info!(
+                "[{}] Dedup: removing record {} ({})",
+                username, loser.id, loser.original_filename,
+            );
+            db.delete_record(loser.id).await?;
+            deduplicated += 1;
+        }
+    }
+
+    if deduplicated > 0 {
+        info!(
+            "[{}] Deduplicated {} records by content hash",
+            username, deduplicated
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Per-watcher event loop
 // ---------------------------------------------------------------------------
 
@@ -415,6 +556,14 @@ async fn run_watcher(
     if let Err(e) = backfill_content_hashes(&watcher.db, &watcher.root, &watcher.name).await {
         error!(
             "[{}] Content hash backfill failed: {}",
+            watcher.name, e
+        );
+    }
+
+    // Deduplicate records that share the same content hash (post-migration)
+    if let Err(e) = deduplicate_after_backfill(&watcher.db, &watcher.root, &watcher.name).await {
+        error!(
+            "[{}] Post-backfill deduplication failed: {}",
             watcher.name, e
         );
     }

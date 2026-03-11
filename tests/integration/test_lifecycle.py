@@ -9,7 +9,9 @@ entries keyed by filename stem. All (file_stem, format) pairs are unique
 across the entire integration test suite.
 """
 
+import hashlib
 import shutil
+import subprocess
 import time
 import uuid
 
@@ -828,4 +830,136 @@ class TestContentHashBackfill:
         )
         assert row and row != "", (
             "content_hash should be backfilled from the sorted PDF file"
+        )
+
+
+class TestMigrationDedup:
+    """Old DB without content hashes has three records with same PDF content
+    but different metadata.  On watcher restart the backfill computes the
+    content hashes and the post-backfill dedup removes the duplicates.
+
+    Expected: only one record survives; the other two records' source
+    (archive) and processed (sorted) files are moved to ``duplicates/``.
+    """
+
+    def test_migration_dedup_by_content_hash(
+        self, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        # --- Setup ----------------------------------------------------------
+        # 1. Stop the watcher so we can manipulate DB + filesystem
+        subprocess.run(
+            ["docker", "stop", "integration-mrdocument-watcher-1"],
+            check=True, capture_output=True, timeout=30,
+        )
+
+        # 2. Prepare source PDFs (same content, different file hash)
+        variants = ["dedup_variant_a", "dedup_variant_b", "dedup_variant_c"]
+        file_hashes = {}
+        for v in variants:
+            src = generated_dir / f"{v}.pdf"
+            assert src.exists(), f"Generated PDF missing: {src}"
+            # Copy to archive/
+            dest = test_config.archive_dir / f"{v}.pdf"
+            shutil.copy2(str(src), str(dest))
+            # SHA-256 of source file
+            h = hashlib.sha256(src.read_bytes()).hexdigest()
+            file_hashes[v] = h
+
+        # 3. Create processed files in sorted/arbeit/
+        sorted_arbeit = test_config.sorted_dir / "arbeit"
+        sorted_arbeit.mkdir(parents=True, exist_ok=True)
+        processed_names = {}
+        for i, v in enumerate(variants):
+            # Use distinct assigned filenames (as if AI classified differently)
+            name = f"arbeit-rechnung-2025-03-1{5 + i}-schulze.pdf"
+            processed_names[v] = name
+            dest = sorted_arbeit / name
+            shutil.copy2(str(generated_dir / f"{v}.pdf"), str(dest))
+
+        # 4. Clear any existing test records from DB
+        db_exec(
+            "DELETE FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%'"
+        )
+
+        # 5. Insert 3 records simulating an old DB (no content hashes)
+        ts = "2025-01-01T00:00:00Z"
+        for v in variants:
+            rec_id = str(uuid.uuid4())
+            source_paths = (
+                f'[{{"path": "archive/{v}.pdf", "timestamp": "{ts}"}}]'
+            )
+            current_paths = (
+                f'[{{"path": "sorted/arbeit/{processed_names[v]}", '
+                f'"timestamp": "{ts}"}}]'
+            )
+            db_exec(
+                f"INSERT INTO mrdocument.documents_v2 "
+                f"(id, original_filename, source_hash, "
+                f" source_content_hash, content_hash, "
+                f" source_paths, current_paths, "
+                f" context, assigned_filename, hash, "
+                f" state, username) "
+                f"VALUES ("
+                f"  '{rec_id}', '{v}.pdf', '{file_hashes[v]}', "
+                f"  NULL, NULL, "
+                f"  '{source_paths}'::jsonb, '{current_paths}'::jsonb, "
+                f"  'arbeit', '{processed_names[v]}', '{file_hashes[v]}', "
+                f"  'is_complete', 'testuser'"
+                f")"
+            )
+
+        # Verify all 3 records exist
+        count = db_exec(
+            "SELECT count(*) FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%'"
+        )
+        assert count == "3", f"Expected 3 records, got {count}"
+
+        # --- Act: restart watcher -------------------------------------------
+        # 6. Start the watcher (triggers backfill + dedup)
+        restart_watcher()
+
+        # --- Assert ---------------------------------------------------------
+        # 7. Poll until only 1 record remains
+        deadline = time.monotonic() + test_config.max_timeout
+        final_count = "3"
+        while time.monotonic() < deadline:
+            final_count = db_exec(
+                "SELECT count(*) FROM mrdocument.documents_v2 "
+                "WHERE original_filename LIKE 'dedup_variant_%'"
+            )
+            if final_count == "1":
+                break
+            time.sleep(test_config.poll_interval)
+
+        assert final_count == "1", (
+            f"Expected 1 record after dedup, got {final_count}"
+        )
+
+        # 8. Verify exactly 2 files moved to duplicates/
+        dup_files = list(test_config.duplicates_dir.rglob("dedup_variant_*.pdf"))
+        # Each loser produces 2 files (archive + sorted), so expect 4
+        assert len(dup_files) >= 4, (
+            f"Expected at least 4 files in duplicates/, found {len(dup_files)}: "
+            f"{[str(f) for f in dup_files]}"
+        )
+
+        # 9. Verify the surviving record's files are still in place
+        surviving = db_exec(
+            "SELECT original_filename FROM mrdocument.documents_v2 "
+            "WHERE original_filename LIKE 'dedup_variant_%'"
+        )
+        assert surviving, "No surviving record found"
+        survivor_stem = surviving.replace(".pdf", "")
+
+        # Source should still be in archive/
+        assert (test_config.archive_dir / f"{survivor_stem}.pdf").exists(), (
+            f"Survivor's archive file missing: {survivor_stem}.pdf"
+        )
+
+        # Processed file should still be in sorted/arbeit/
+        survivor_processed = processed_names[survivor_stem]
+        assert (sorted_arbeit / survivor_processed).exists(), (
+            f"Survivor's sorted file missing: {survivor_processed}"
         )

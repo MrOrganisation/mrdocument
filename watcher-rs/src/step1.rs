@@ -1258,4 +1258,34 @@ mod tests {
             &[record]
         ));
     }
+
+    #[test]
+    fn test_dedup_pdfs_same_content_hash() {
+        let test_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("tests/integration/generated");
+        let a = test_dir.join("dedup_variant_a.pdf");
+        let b = test_dir.join("dedup_variant_b.pdf");
+        let c = test_dir.join("dedup_variant_c.pdf");
+
+        if !a.exists() || !b.exists() || !c.exists() {
+            eprintln!("Skipping: dedup test PDFs not generated yet");
+            return;
+        }
+
+        let ch_a = compute_content_hash(&a).expect("content hash A");
+        let ch_b = compute_content_hash(&b).expect("content hash B");
+        let ch_c = compute_content_hash(&c).expect("content hash C");
+
+        assert_eq!(ch_a, ch_b, "content hash A != B");
+        assert_eq!(ch_b, ch_c, "content hash B != C");
+
+        // File hashes must differ
+        let fh_a = compute_sha256(&a).unwrap();
+        let fh_b = compute_sha256(&b).unwrap();
+        let fh_c = compute_sha256(&c).unwrap();
+        assert_ne!(fh_a, fh_b, "file hash A == B (should differ)");
+        assert_ne!(fh_b, fh_c, "file hash B == C (should differ)");
+    }
 }

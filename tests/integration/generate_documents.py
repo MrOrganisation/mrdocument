@@ -595,6 +595,84 @@ def _generate_rtf(doc_id: str, content: list[tuple[str, str]], output_dir: Path)
     return path
 
 
+def _generate_dedup_pdfs(content: list[tuple[str, str]], output_dir: Path) -> list[Path]:
+    """Generate 3 PDFs with identical page content but different metadata.
+
+    Each variant uses the same text/layout (same content hash) but a different
+    document title and author, producing different file-level hashes.
+    """
+    variants = [
+        ("dedup_variant_a", "Original Scan", "Scanner A"),
+        ("dedup_variant_b", "Copy Scan", "Scanner B"),
+        ("dedup_variant_c", "Rescan", "Scanner C"),
+    ]
+    styles = getSampleStyleSheet()
+    heading_style = ParagraphStyle(
+        "DedupHeading", parent=styles["Heading1"], fontSize=16, spaceAfter=4
+    )
+    subheading_style = ParagraphStyle(
+        "DedupSubheading", parent=styles["Heading2"], fontSize=12, spaceAfter=2
+    )
+    body_style = ParagraphStyle(
+        "DedupBody", parent=styles["Normal"], fontSize=10, spaceAfter=2
+    )
+
+    paths = []
+    for doc_id, title, author in variants:
+        path = output_dir / f"{doc_id}.pdf"
+        if path.exists():
+            paths.append(path)
+            continue
+
+        doc = SimpleDocTemplate(
+            str(path),
+            pagesize=A4,
+            leftMargin=2 * cm,
+            rightMargin=2 * cm,
+            topMargin=2 * cm,
+            bottomMargin=2 * cm,
+            title=title,
+            author=author,
+        )
+        story = []
+        for style, text in content:
+            if not text:
+                story.append(Spacer(1, 12))
+                continue
+            if style == "heading":
+                story.append(Paragraph(text, heading_style))
+            elif style == "subheading":
+                story.append(Paragraph(text, subheading_style))
+            else:
+                story.append(Paragraph(text, body_style))
+        doc.build(story)
+        paths.append(path)
+    return paths
+
+
+# Content shared by all dedup test variants
+DEDUP_CONTENT = [
+    ("heading", "Schulze GmbH"),
+    ("subheading", "Industriestrasse 42, 70173 Stuttgart"),
+    ("body", ""),
+    ("body", "Datum: 15. Maerz 2025"),
+    ("body", "Rechnungsnummer: RE-2025-03-DEDUP"),
+    ("body", ""),
+    ("heading", "RECHNUNG (Dedup Test)"),
+    ("body", ""),
+    ("body", "Sehr geehrte Damen und Herren,"),
+    ("body", ""),
+    ("body", "hiermit stellen wir Ihnen folgende Leistungen in Rechnung:"),
+    ("body", ""),
+    ("body", "Pos. 1: Systemwartung Q1 2025, pauschal = 1.500,00 EUR"),
+    ("body", ""),
+    ("body", "Gesamtbetrag: 1.785,00 EUR (inkl. 19% MwSt.)"),
+    ("body", ""),
+    ("body", "Mit freundlichen Gruessen"),
+    ("body", "Thomas Schulze"),
+]
+
+
 def generate_all(output_dir: Path) -> list[Path]:
     """Generate test documents in PDF, TXT, and RTF formats.
 
@@ -607,6 +685,7 @@ def generate_all(output_dir: Path) -> list[Path]:
         generated.append(_generate_pdf(doc_id, content, output_dir))
         generated.append(_generate_txt(doc_id, content, output_dir))
         generated.append(_generate_rtf(doc_id, content, output_dir))
+    generated.extend(_generate_dedup_pdfs(DEDUP_CONTENT, output_dir))
     return generated
 
 

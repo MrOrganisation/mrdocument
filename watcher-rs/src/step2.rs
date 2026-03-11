@@ -89,6 +89,10 @@ fn find_by_output_filename_mut<'a>(
         .find(|r| r.output_filename.as_deref() == Some(filename))
 }
 
+/// Check whether a file with the given hashes would violate the uniqueness
+/// invariant: every non-NULL `source_content_hash` / `content_hash` value
+/// must be unique across both columns and all records.  Regular hashes
+/// (`source_hash`, `hash`) are also checked for exact-file dedup.
 fn is_duplicate_hash(
     records: &[Record],
     hash_value: &str,
@@ -109,7 +113,7 @@ fn is_duplicate_hash(
         if r.hash.as_deref() == Some(hash_value) {
             return true;
         }
-        // Check content hashes
+        // Check content hashes (unique across both columns)
         if let Some(ch) = content_hash {
             if !ch.is_empty() {
                 if r.source_content_hash.as_deref() == Some(ch) {

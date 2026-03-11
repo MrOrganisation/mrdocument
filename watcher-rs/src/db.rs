@@ -24,6 +24,9 @@ CREATE TABLE IF NOT EXISTS mrdocument.documents_v2 (
     id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     original_filename       TEXT NOT NULL,
     source_hash             TEXT NOT NULL,
+    -- INVARIANT: every non-NULL value across source_content_hash and
+    -- content_hash must be unique among all records and both columns.
+    -- Enforced at the application level (is_duplicate_hash, post-backfill dedup).
     source_content_hash     TEXT,
 
     -- Path lists (JSONB arrays of {"path": "...", "timestamp": "..."})
@@ -37,7 +40,7 @@ CREATE TABLE IF NOT EXISTS mrdocument.documents_v2 (
     metadata                JSONB,
     assigned_filename       TEXT,
     hash                    TEXT,
-    content_hash            TEXT,
+    content_hash            TEXT,   -- see INVARIANT above
 
     -- Processing
     output_filename         TEXT,
