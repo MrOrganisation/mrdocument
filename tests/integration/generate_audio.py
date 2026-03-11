@@ -131,6 +131,19 @@ AUDIO_FILES = {
             "der neuen Firewall beginnt in der dritten Kalenderwoche."
         ),
     },
+    "privatnotiz": {
+        "context": "privat",
+        "date": "2025-08-03",
+        "intro_position": None,
+        "intro_text": None,
+        "format": "m4a",
+        "body_text": (
+            "Hallo, hier ist eine kurze Notiz fuer mich selbst. "
+            "Morgen um zehn Uhr habe ich einen Termin bei Doktor Braun "
+            "in der Praxis am Marktplatz. Ich soll die Befunde vom "
+            "dritten August mitbringen und vorher nichts essen."
+        ),
+    },
 }
 
 

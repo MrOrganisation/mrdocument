@@ -1322,3 +1322,61 @@ fn parse_sse_response(body: &str) -> Result<Value, AiError> {
         },
     }))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_to_filename_m4a_source_filename_pattern() {
+        let mut fields = HashMap::new();
+        fields.insert("type".to_string(), Value::String("Notiz".to_string()));
+        fields.insert("sender".to_string(), Value::String("Dr. Braun".to_string()));
+
+        let meta = DocumentMetadata {
+            fields,
+            date: Some(NaiveDate::from_ymd_opt(2025, 8, 3).unwrap()),
+            context: Some("privat".to_string()),
+            new_clues: HashMap::new(),
+        };
+
+        let result = meta.to_filename(
+            "{context}-{source_filename}-{date}",
+            Some("privatnotiz.m4a"),
+        );
+        assert_eq!(result, "privat-privatnotiz-2025-08-03.pdf");
+    }
+
+    #[test]
+    fn test_to_filename_source_filename_stem_only() {
+        let meta = DocumentMetadata {
+            fields: HashMap::new(),
+            date: Some(NaiveDate::from_ymd_opt(2025, 1, 15).unwrap()),
+            context: Some("work".to_string()),
+            new_clues: HashMap::new(),
+        };
+
+        let result = meta.to_filename(
+            "{context}-{source_filename}",
+            Some("recording.wav"),
+        );
+        assert_eq!(result, "work-recording.pdf");
+    }
+
+    #[test]
+    fn test_to_filename_without_source_filename() {
+        let meta = DocumentMetadata {
+            fields: HashMap::new(),
+            date: Some(NaiveDate::from_ymd_opt(2025, 1, 15).unwrap()),
+            context: Some("work".to_string()),
+            new_clues: HashMap::new(),
+        };
+
+        // source_filename placeholder resolves to empty → gets cleaned up
+        let result = meta.to_filename(
+            "{context}-{source_filename}-{date}",
+            None,
+        );
+        assert_eq!(result, "work-2025-01-15.pdf");
+    }
+}

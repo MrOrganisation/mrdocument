@@ -61,6 +61,12 @@ AUDIO_TRANSCRIPTS = {
         "vom zwanzigsten Januar zusammenfassen. Die Serverausstattung "
         "wird wie besprochen im Februar geliefert."
     ),
+    "privatnotiz": (
+        "Hallo, hier ist eine kurze Notiz fuer mich selbst. "
+        "Morgen um zehn Uhr habe ich einen Termin bei Doktor Braun "
+        "in der Praxis am Marktplatz. Ich soll die Befunde vom "
+        "dritten August mitbringen und vorher nichts essen."
+    ),
 }
 
 

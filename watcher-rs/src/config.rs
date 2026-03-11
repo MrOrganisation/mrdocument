@@ -1720,6 +1720,24 @@ mod tests {
     }
 
     #[test]
+    fn test_format_filename_m4a_source_filename_pattern() {
+        // Simulates the privat audio_filename pattern: "{context}-{source_filename}-{date}"
+        let meta = serde_json::json!({
+            "context": "privat",
+            "date": "2025-08-03",
+            "type": "Notiz",
+            "sender": "Dr. Braun",
+        });
+        let result = format_filename(
+            &meta,
+            "{context}-{source_filename}-{date}",
+            Some("privatnotiz.m4a"),
+        );
+        // source_filename strips extension → "privatnotiz"
+        assert_eq!(result, "privat-privatnotiz-2025-08-03.pdf");
+    }
+
+    #[test]
     fn test_format_filename_date_not_sanitized() {
         let meta = serde_json::json!({"date": "2025-01-15"});
         let result = format_filename(&meta, "{date}", None);

@@ -393,3 +393,62 @@ class TestAudioFilenamePattern:
             f"Expected audio_filename pattern (context-date-sender-type) but got "
             f"what looks like the PDF pattern (context-type-date-sender)."
         )
+
+
+# ===================================================================
+# Class 5: M4A with source_filename in audio_filename pattern
+# ===================================================================
+
+
+class TestM4aSourceFilename:
+    """Test that M4A transcripts use the source_filename placeholder.
+
+    privat.yaml defines:
+        audio_filename: "{context}-{source_filename}-{date}"
+
+    So ``privatnotiz.m4a`` (context=privat, date=2025-08-03) should produce
+    a filename like ``privat-privatnotiz-2025-08-03.txt``, embedding the
+    original audio filename stem.
+    """
+
+    def test_m4a_source_filename_in_output(
+        self, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        src = generated_dir / "privatnotiz.m4a"
+        assert src.exists(), f"Source audio missing: {src}"
+
+        dest = test_config.incoming_dir / "privatnotiz.m4a"
+        atomic_copy(src, dest)
+
+        # Poll processed/ for TXT output — pattern includes source_filename
+        date = "2025-08-03"
+        pattern = f"privat-*privatnotiz*{date}*.txt"
+        result = poll_for_file(
+            test_config.processed_dir,
+            pattern,
+            test_config.poll_interval,
+            test_config.max_timeout,
+        )
+        assert result is not None, (
+            f"TXT output not found in processed/ within {test_config.max_timeout}s "
+            f"(pattern: {pattern})"
+        )
+
+        # Verify the stem contains the source filename
+        stem = result.stem.lower()
+        assert "privatnotiz" in stem, (
+            f"Filename stem '{result.stem}' does not contain 'privatnotiz'. "
+            f"Expected audio_filename pattern with {{source_filename}} placeholder."
+        )
+
+        # Verify the expected prefix: "privat-privatnotiz-2025-08-03"
+        expected_prefix = f"privat-privatnotiz-{date}"
+        assert stem.startswith(expected_prefix), (
+            f"Filename stem '{result.stem}' does not start with '{expected_prefix}'. "
+            f"Expected pattern: {{context}}-{{source_filename}}-{{date}}"
+        )
+
+        # Transcript should not be empty
+        text = result.read_text(encoding="utf-8")
+        assert len(text) > 0, "Transcript is empty"
+        assert "Doktor Braun" in text or "Marktplatz" in text

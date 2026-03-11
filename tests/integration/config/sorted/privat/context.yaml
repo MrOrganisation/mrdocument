@@ -2,6 +2,7 @@ name: privat
 description: Persoenliche Dokumente wie Arztbriefe, Versicherungsunterlagen und Kontoauszuege
 
 filename: "{context}-{type}-{date}-{sender}"
+audio_filename: "{context}-{source_filename}-{date}"
 
 fields:
   type:

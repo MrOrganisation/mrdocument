@@ -209,6 +209,13 @@ DOCUMENT_METADATA = {
         "sender": "Schulze GmbH",
         "date": "2025-01-20",
     },
+    # M4A source_filename pattern test
+    "privatnotiz": {
+        "context": "privat",
+        "type": "Notiz",
+        "sender": "Dr. Braun",
+        "date": "2025-08-03",
+    },
     # Video files (mov, mp4)
     "videocall": {
         "context": "arbeit",
