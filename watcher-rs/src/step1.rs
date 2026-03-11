@@ -306,6 +306,7 @@ impl FilesystemDetector {
                     for path in &event.paths {
                         if let Ok(rel) = path.strip_prefix(&root) {
                             let rel_str = rel.to_string_lossy().to_string();
+                            eprintln!("  inotify: {:?} {}", event.kind, rel_str);
                             let mut set = changed.lock().unwrap();
                             set.insert(rel_str);
                         }
@@ -640,7 +641,17 @@ impl FilesystemDetector {
             return Vec::new();
         }
 
-        info!("detect_incremental: {} inotify events", changed_paths.len());
+        let mut sorted_paths: Vec<&String> = changed_paths.iter().collect();
+        sorted_paths.sort();
+        info!(
+            "detect_incremental: {} inotify events:\n{}",
+            changed_paths.len(),
+            sorted_paths
+                .iter()
+                .map(|p| format!("  {}", p))
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
 
         // Build O(1) lookup indexes from snapshot.
         let index = Self::build_snapshot_index(db_snapshot);
