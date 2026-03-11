@@ -1737,6 +1737,38 @@ mod tests {
         assert_eq!(result, "privat-privatnotiz-2025-08-03.pdf");
     }
 
+    /// Regression: the watcher stripped the extension before sending the
+    /// filename to the service, so `source_filename` received an
+    /// already-stripped stem.  For dotted filenames like "my.recording.m4a"
+    /// the watcher sent "my.recording", then `format_filename` called
+    /// `file_stem("my.recording")` → "my", losing ".recording".
+    ///
+    /// The fix: the watcher must send the full filename (with extension)
+    /// so that `file_stem` strips exactly once.
+    #[test]
+    fn test_format_filename_source_filename_dotted_stem() {
+        let meta = serde_json::json!({
+            "context": "privat",
+            "date": "2025-08-03",
+        });
+        // Full filename (with extension) → file_stem strips once → correct
+        let result = format_filename(
+            &meta,
+            "{context}-{source_filename}-{date}",
+            Some("my.recording.m4a"),
+        );
+        assert_eq!(result, "privat-my.recording-2025-08-03.pdf");
+
+        // Pre-stripped stem (the bug) → file_stem strips again → wrong
+        let buggy = format_filename(
+            &meta,
+            "{context}-{source_filename}-{date}",
+            Some("my.recording"),  // already stripped by watcher
+        );
+        // Demonstrates the bug: "my" instead of "my.recording"
+        assert_eq!(buggy, "privat-my-2025-08-03.pdf");
+    }
+
     #[test]
     fn test_format_filename_date_not_sanitized() {
         let meta = serde_json::json!({"date": "2025-01-15"});

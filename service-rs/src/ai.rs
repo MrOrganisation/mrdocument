@@ -1363,6 +1363,31 @@ mod tests {
         assert_eq!(result, "work-recording.pdf");
     }
 
+    /// Regression test: the watcher used to strip the extension before
+    /// sending the filename to the service.  For dotted stems like
+    /// "my.recording.m4a" the watcher sent "my.recording", then
+    /// `to_filename` called `file_stem("my.recording")` → "my", losing
+    /// the ".recording" part.
+    ///
+    /// After the fix the watcher sends the full filename (with extension),
+    /// so `file_stem` strips exactly once → "my.recording".
+    #[test]
+    fn test_to_filename_source_filename_dotted_stem() {
+        let meta = DocumentMetadata {
+            fields: HashMap::new(),
+            date: Some(NaiveDate::from_ymd_opt(2025, 8, 3).unwrap()),
+            context: Some("privat".to_string()),
+            new_clues: HashMap::new(),
+        };
+
+        // After fix: watcher sends full filename with extension
+        let result = meta.to_filename(
+            "{context}-{source_filename}-{date}",
+            Some("my.recording.m4a"),
+        );
+        assert_eq!(result, "privat-my.recording-2025-08-03.pdf");
+    }
+
     #[test]
     fn test_to_filename_without_source_filename() {
         let meta = DocumentMetadata {

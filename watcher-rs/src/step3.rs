@@ -764,14 +764,9 @@ impl Processor {
         pre_classified: Option<&serde_json::Value>,
         contexts: &[serde_json::Value],
     ) -> Result<Option<serde_json::Value>> {
-        let stem = Path::new(filename)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(filename);
-
         let mut request_body = serde_json::json!({
             "transcript": transcript,
-            "filename": stem,
+            "filename": filename,
             "contexts": contexts,
             "user_dir": self.root.to_string_lossy(),
         });
