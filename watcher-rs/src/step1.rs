@@ -20,6 +20,16 @@ use uuid::Uuid;
 use crate::models::{ChangeItem, EventType, Record};
 use crate::prefilter::SUPPORTED_EXTENSIONS;
 
+/// Precomputed O(1) lookup indexes built from a DB snapshot.
+struct SnapshotIndex {
+    /// All `source_hash` and `hash` values across records.
+    known_hashes: HashSet<String>,
+    /// All `output_filename` values.
+    output_filenames: HashSet<String>,
+    /// All `current_paths` entries that start with `.output/`.
+    output_current_paths: HashSet<String>,
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -489,6 +499,9 @@ impl FilesystemDetector {
         let current_state = self.scan();
         let mut changes: Vec<ChangeItem> = Vec::new();
 
+        // Build O(1) lookup indexes from snapshot.
+        let index = Self::build_snapshot_index(db_snapshot);
+
         // Build map of paths already tracked in DB -> their record's hashes.
         let mut known_paths: HashMap<String, Option<String>> = HashMap::new();
         for record in db_snapshot {
@@ -504,7 +517,7 @@ impl FilesystemDetector {
             let location = get_location(rel_path);
 
             // Stray detection: unknown file in non-eligible location
-            if !Self::is_known(file_hash, rel_path, db_snapshot) {
+            if !Self::is_known(file_hash, rel_path, &index) {
                 if !ELIGIBLE_LOCATIONS.contains(&location) {
                     if location == ".output" {
                         self.delete_stray(rel_path);
@@ -597,6 +610,9 @@ impl FilesystemDetector {
             return Vec::new();
         }
 
+        // Build O(1) lookup indexes from snapshot.
+        let index = Self::build_snapshot_index(db_snapshot);
+
         let mut changes: Vec<ChangeItem> = Vec::new();
 
         for rel_path in &changed_paths {
@@ -636,7 +652,7 @@ impl FilesystemDetector {
                 if !was_known {
                     // New file -- stray detection
                     let location = get_location(rel_path);
-                    if !Self::is_known(&file_hash, rel_path, db_snapshot)
+                    if !Self::is_known(&file_hash, rel_path, &index)
                         && !ELIGIBLE_LOCATIONS.contains(&location)
                     {
                         if location == ".output" {
@@ -696,8 +712,40 @@ impl FilesystemDetector {
     // Stray handling
     // ------------------------------------------------------------------
 
-    /// Check if a file is known in the snapshot.
-    fn is_known(file_hash: &str, rel_path: &str, snapshot: &[Record]) -> bool {
+    /// Build O(1) lookup indexes from a snapshot for [`Self::is_known`].
+    fn build_snapshot_index(snapshot: &[Record]) -> SnapshotIndex {
+        let mut known_hashes: HashSet<String> = HashSet::with_capacity(snapshot.len() * 2);
+        let mut output_filenames: HashSet<String> = HashSet::new();
+        let mut output_current_paths: HashSet<String> = HashSet::new();
+
+        for r in snapshot {
+            if !r.source_hash.is_empty() {
+                known_hashes.insert(r.source_hash.clone());
+            }
+            if let Some(ref h) = r.hash {
+                if !h.is_empty() {
+                    known_hashes.insert(h.clone());
+                }
+            }
+            if let Some(ref ofn) = r.output_filename {
+                output_filenames.insert(ofn.clone());
+            }
+            for pe in &r.current_paths {
+                if pe.path.starts_with(".output/") {
+                    output_current_paths.insert(pe.path.clone());
+                }
+            }
+        }
+
+        SnapshotIndex {
+            known_hashes,
+            output_filenames,
+            output_current_paths,
+        }
+    }
+
+    /// Check if a file is known, using precomputed indexes for O(1) lookups.
+    fn is_known(file_hash: &str, rel_path: &str, index: &SnapshotIndex) -> bool {
         let location = get_location(rel_path);
 
         // .output files match by filename (or sidecar suffix)
@@ -710,44 +758,21 @@ impl FilesystemDetector {
             // Sidecar files (.meta.json) are associated with their output file
             if filename.ends_with(".meta.json") {
                 let base = &filename[..filename.len() - ".meta.json".len()];
-                if snapshot
-                    .iter()
-                    .any(|r| r.output_filename.as_deref() == Some(base))
-                {
+                if index.output_filenames.contains(base) {
                     return true;
                 }
-                // After output_filename is cleared, check current_paths
                 let base_path = format!(".output/{}", base);
-                return snapshot
-                    .iter()
-                    .any(|r| r.current_paths.iter().any(|pe| pe.path == base_path));
+                return index.output_current_paths.contains(&base_path);
             }
 
-            if snapshot
-                .iter()
-                .any(|r| r.output_filename.as_deref() == Some(filename))
-            {
+            if index.output_filenames.contains(filename) {
                 return true;
             }
-            // After output_filename is cleared, check current_paths
-            return snapshot
-                .iter()
-                .any(|r| r.current_paths.iter().any(|pe| pe.path == rel_path));
+            return index.output_current_paths.contains(rel_path);
         }
 
         // Other locations: match by source_hash or hash
-        for r in snapshot {
-            if r.source_hash == file_hash {
-                return true;
-            }
-            if let Some(ref h) = r.hash {
-                if h == file_hash {
-                    return true;
-                }
-            }
-        }
-
-        false
+        index.known_hashes.contains(file_hash)
     }
 
     /// Delete a stray file that we know we created (e.g. `.output/`).
@@ -1193,10 +1218,11 @@ mod tests {
     #[test]
     fn test_is_known_by_source_hash() {
         let record = make_record("abc123", &["incoming/doc.pdf"], &[], None, None);
+        let index = FilesystemDetector::build_snapshot_index(&[record]);
         assert!(FilesystemDetector::is_known(
             "abc123",
             "incoming/doc.pdf",
-            &[record]
+            &index
         ));
     }
 
@@ -1209,10 +1235,11 @@ mod tests {
             Some("processed_hash"),
             None,
         );
+        let index = FilesystemDetector::build_snapshot_index(&[record]);
         assert!(FilesystemDetector::is_known(
             "processed_hash",
             "incoming/other.pdf",
-            &[record]
+            &index
         ));
     }
 
@@ -1225,10 +1252,11 @@ mod tests {
             None,
             Some("uuid-output"),
         );
+        let index = FilesystemDetector::build_snapshot_index(&[record]);
         assert!(FilesystemDetector::is_known(
             "anyhash",
             ".output/uuid-output",
-            &[record]
+            &index
         ));
     }
 
@@ -1241,21 +1269,23 @@ mod tests {
             None,
             Some("uuid-output"),
         );
+        let index = FilesystemDetector::build_snapshot_index(&[record]);
         // Sidecar .meta.json files should be recognized as known
         assert!(FilesystemDetector::is_known(
             "anyhash",
             ".output/uuid-output.meta.json",
-            &[record]
+            &index
         ));
     }
 
     #[test]
     fn test_is_known_unknown() {
         let record = make_record("abc", &["incoming/doc.pdf"], &[], None, None);
+        let index = FilesystemDetector::build_snapshot_index(&[record]);
         assert!(!FilesystemDetector::is_known(
             "completely_different_hash",
             "incoming/unknown.pdf",
-            &[record]
+            &index
         ));
     }
 
