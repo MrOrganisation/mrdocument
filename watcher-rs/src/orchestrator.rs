@@ -530,6 +530,7 @@ impl DocumentWatcherV2 {
 
         // 1. Get current DB snapshot (filtered by username)
         let snapshot = self.db.get_snapshot(Some(self.name.as_str())).await?;
+        let t_snapshot = Instant::now();
 
         // 2. Detect filesystem changes
         let changes = self.detector.detect(&snapshot).await;
@@ -837,12 +838,13 @@ impl DocumentWatcherV2 {
 
         let elapsed = t0.elapsed();
         info!(
-            "[{}] Cycle done: {:.1}s (prefilter={:.2} detect={:.2} reconcile={:.2} fs={:.2} symlink={:.2}), \
+            "[{}] Cycle done: {:.1}s (prefilter={:.2} snapshot={:.2} detect={:.2} reconcile={:.2} fs={:.2} symlink={:.2}), \
              {} records, {} changes, {} reconcile saves, {} state transitions",
             self.name,
             elapsed.as_secs_f64(),
             (t_prefilter - t0).as_secs_f64(),
-            (t_detect - t_prefilter).as_secs_f64(),
+            (t_snapshot - t_prefilter).as_secs_f64(),
+            (t_detect - t_snapshot).as_secs_f64(),
             (t_fs - t_reconcile).as_secs_f64(),
             (t_symlink - t_fs).as_secs_f64(),
             (Instant::now() - t_symlink).as_secs_f64(),

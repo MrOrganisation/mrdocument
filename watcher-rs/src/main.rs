@@ -561,14 +561,16 @@ fn pick_dedup_winner(group: &[&Record]) -> usize {
         .unwrap_or(0)
 }
 
-/// Move a single file into `duplicates/{location}/{location_path}/{filename}`.
+/// Move a single file into `duplicates/{date}/{location}/{location_path}/{filename}`.
 fn move_to_duplicates(root: &Path, rel_path: &str) {
     let src = root.join(rel_path);
     let (location, location_path, filename) = Record::decompose_path(rel_path);
+    let date_dir = crate::step4::today_date_dir();
     let dest = if location_path.is_empty() {
-        root.join("duplicates").join(&location).join(&filename)
+        root.join("duplicates").join(&date_dir).join(&location).join(&filename)
     } else {
         root.join("duplicates")
+            .join(&date_dir)
             .join(&location)
             .join(&location_path)
             .join(&filename)
@@ -709,7 +711,7 @@ async fn main() -> Result<()> {
         .with_target(true)
         .init();
 
-    info!("Watcher v2 starting");
+    info!("Watcher v2 starting (version {})", env!("CARGO_PKG_VERSION"));
 
     // 3. Database connection
     let db = Arc::new(Database::connect(&database_url).await?);
@@ -834,7 +836,7 @@ async fn main() -> Result<()> {
 mod tests {
     use super::*;
     use crate::models::{PathEntry, Record, State};
-    use chrono::{TimeZone, Utc};
+    use chrono::Utc;
 
     fn make_record_at(
         filename: &str,

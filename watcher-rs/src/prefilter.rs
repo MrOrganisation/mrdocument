@@ -27,7 +27,7 @@ pub static SUPPORTED_EXTENSIONS: Lazy<HashSet<&'static str>> = Lazy::new(|| {
 });
 
 /// Top-level directories excluded from pre-filter scanning.
-const EXCLUDED_DIRS: &[&str] = &["error", "void"];
+const EXCLUDED_DIRS: &[&str] = &["error", "void", "duplicates", "missing"];
 
 /// Config filenames that are allowed inside `sorted/{context}/`.
 const CONFIG_FILENAMES: &[&str] = &["context.yaml", "smartfolders.yaml", "generated.yaml"];
@@ -40,7 +40,7 @@ const CONFIG_FILENAMES: &[&str] = &["context.yaml", "smartfolders.yaml", "genera
 /// Returns the number of files moved.
 pub fn prefilter(root: &Path) -> usize {
     let mut moved: usize = 0;
-    let error_dir = root.join("error");
+    let error_dir = root.join("error").join(crate::step4::today_date_dir());
 
     let entries = match fs::read_dir(root) {
         Ok(entries) => entries,
@@ -199,6 +199,10 @@ mod tests {
         fs::write(path, content).unwrap();
     }
 
+    fn error_date_dir(root: &Path) -> std::path::PathBuf {
+        root.join("error").join(crate::step4::today_date_dir())
+    }
+
     #[test]
     fn test_moves_unsupported_from_incoming() {
         let tmp = TempDir::new().unwrap();
@@ -208,8 +212,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("incoming/font.ttf").exists());
-        // File should be in error/
-        assert!(root.join("error/font.ttf").exists());
+        assert!(error_date_dir(root).join("font.ttf").exists());
     }
 
     #[test]
@@ -221,7 +224,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("archive/spreadsheet.numbers").exists());
-        assert!(root.join("error/spreadsheet.numbers").exists());
+        assert!(error_date_dir(root).join("spreadsheet.numbers").exists());
     }
 
     #[test]
@@ -236,7 +239,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("sorted/context/nested.numbers").exists());
-        assert!(root.join("error/nested.numbers").exists());
+        assert!(error_date_dir(root).join("nested.numbers").exists());
     }
 
     #[test]
@@ -248,7 +251,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("processed/thesis.tex").exists());
-        assert!(root.join("error/thesis.tex").exists());
+        assert!(error_date_dir(root).join("thesis.tex").exists());
     }
 
     #[test]
@@ -260,7 +263,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("reviewed/budget.numbers").exists());
-        assert!(root.join("error/budget.numbers").exists());
+        assert!(error_date_dir(root).join("budget.numbers").exists());
     }
 
     #[test]
@@ -272,7 +275,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("trash/junk.ttf").exists());
-        assert!(root.join("error/junk.ttf").exists());
+        assert!(error_date_dir(root).join("junk.ttf").exists());
     }
 
     #[test]
@@ -329,15 +332,16 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         setup_dirs(root);
-        // Pre-existing file in error/ with same name
-        write_file(&root.join("error/font.ttf"), b"existing");
+        let err_today = error_date_dir(root);
+        // Pre-existing file in error/{date}/ with same name
+        write_file(&err_today.join("font.ttf"), b"existing");
         write_file(&root.join("incoming/font.ttf"), b"new");
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         // Original error file still exists
-        assert!(root.join("error/font.ttf").exists());
-        // There should be a second file in error/ with a unique suffix
-        let error_files: Vec<_> = fs::read_dir(root.join("error"))
+        assert!(err_today.join("font.ttf").exists());
+        // There should be a second file in error/{date}/ with a unique suffix
+        let error_files: Vec<_> = fs::read_dir(&err_today)
             .unwrap()
             .flatten()
             .filter(|e| {
@@ -378,9 +382,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
         setup_dirs(root);
-        // Create a real file to point to
         write_file(&root.join("incoming/real.pdf"), b"data");
-        // Create a symlink with unsupported extension
         unix_fs::symlink(
             root.join("incoming/real.pdf"),
             root.join("incoming/link.ttf"),
@@ -402,14 +404,13 @@ mod tests {
     fn test_creates_error_dir() {
         let tmp = TempDir::new().unwrap();
         let root = tmp.path();
-        // Only create incoming, not error
         fs::create_dir_all(root.join("incoming")).unwrap();
         write_file(&root.join("incoming/font.ttf"), b"data");
         assert!(!root.join("error").exists());
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(root.join("error").exists());
-        assert!(root.join("error/font.ttf").exists());
+        assert!(error_date_dir(root).join("font.ttf").exists());
     }
 
     #[test]
@@ -420,7 +421,7 @@ mod tests {
         write_file(&root.join("incoming/Makefile"), b"data");
         let moved = prefilter(root);
         assert_eq!(moved, 1);
-        assert!(root.join("error/Makefile").exists());
+        assert!(error_date_dir(root).join("Makefile").exists());
     }
 
     #[test]
@@ -468,7 +469,7 @@ mod tests {
         let moved = prefilter(root);
         assert_eq!(moved, 1);
         assert!(!root.join("sorted/mycontext/random.yaml").exists());
-        assert!(root.join("error/random.yaml").exists());
+        assert!(error_date_dir(root).join("random.yaml").exists());
     }
 
     #[test]

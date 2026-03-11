@@ -30,11 +30,21 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _read_version() -> str:
+    for p in (Path(__file__).resolve().parent.parent / "VERSION", Path("/app/VERSION")):
+        if p.is_file():
+            return p.read_text().strip()
+    return "unknown"
+
+APP_VERSION = _read_version()
+
 app = FastAPI(
     title="STT API",
     description="Speech-to-Text API using ElevenLabs",
-    version="0.2.0",
+    version=APP_VERSION,
 )
+
+logger.info("STT service starting (version %s)", APP_VERSION)
 
 
 @app.post("/transcribe")

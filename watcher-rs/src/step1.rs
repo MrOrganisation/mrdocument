@@ -496,7 +496,10 @@ impl FilesystemDetector {
             error!("Failed to start observer: {}", e);
         }
 
+        let t0 = std::time::Instant::now();
         let current_state = self.scan();
+        let t_scan = t0.elapsed();
+
         let mut changes: Vec<ChangeItem> = Vec::new();
 
         // Build O(1) lookup indexes from snapshot.
@@ -512,6 +515,9 @@ impl FilesystemDetector {
                 known_paths.insert(pe.path.clone(), record.hash.clone());
             }
         }
+
+        let mut content_hash_count = 0u32;
+        let t1 = std::time::Instant::now();
 
         for (rel_path, (file_hash, file_size)) in &current_state {
             let location = get_location(rel_path);
@@ -538,6 +544,7 @@ impl FilesystemDetector {
             // Only compute content hash for files that are genuinely new or changed
             let abs_path = self.root.join(rel_path);
             let content_hash = compute_content_hash(&abs_path);
+            content_hash_count += 1;
 
             changes.push(ChangeItem {
                 event_type: EventType::Addition,
@@ -547,6 +554,8 @@ impl FilesystemDetector {
                 size: Some(*file_size),
             });
         }
+
+        let t_match = t1.elapsed();
 
         // DB paths that don't exist on disk (stale/deleted while watcher was down)
         let mut seen: HashSet<String> = HashSet::new();
@@ -574,6 +583,14 @@ impl FilesystemDetector {
                 }
             }
         }
+
+        info!(
+            "detect_full: {} files scanned, scan={:.2}s match={:.2}s content_hashes={}",
+            current_state.len(),
+            t_scan.as_secs_f64(),
+            t_match.as_secs_f64(),
+            content_hash_count,
+        );
 
         // Update previous state with metadata for cache-aware scanning
         self.previous_state = current_state
@@ -609,6 +626,8 @@ impl FilesystemDetector {
         if changed_paths.is_empty() {
             return Vec::new();
         }
+
+        info!("detect_incremental: {} inotify events", changed_paths.len());
 
         // Build O(1) lookup indexes from snapshot.
         let index = Self::build_snapshot_index(db_snapshot);
@@ -787,7 +806,7 @@ impl FilesystemDetector {
     /// Move a stray file to the `error/` directory.
     fn move_to_error(&self, rel_path: &str) {
         let src = self.root.join(rel_path);
-        let error_dir = self.root.join("error");
+        let error_dir = self.root.join("error").join(crate::step4::today_date_dir());
         if let Err(e) = fs::create_dir_all(&error_dir) {
             error!("Failed to create error directory: {}", e);
             return;

@@ -28,7 +28,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def _read_version() -> str:
+    for p in (Path(__file__).parent / "VERSION", Path("/app/VERSION")):
+        if p.is_file():
+            return p.read_text().strip()
+    return "unknown"
+
+APP_VERSION = _read_version()
+
 app = Flask(__name__)
+
+logger.info("OCRmyPDF service starting (version %s)", APP_VERSION)
 
 # Configure upload settings
 UPLOAD_FOLDER = '/tmp/uploads'

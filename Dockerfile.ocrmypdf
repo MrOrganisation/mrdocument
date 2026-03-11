@@ -21,8 +21,9 @@ RUN pip3 install --no-cache-dir --break-system-packages flask werkzeug gunicorn
 RUN mkdir -p /input /output /app && \
     chmod 777 /input /output
 
-# Copy API server
+# Copy API server and version file
 COPY ocrmypdf/api.py /app/api.py
+COPY VERSION /app/VERSION
 
 WORKDIR /app
 

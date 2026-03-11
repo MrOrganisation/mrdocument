@@ -62,12 +62,17 @@ pub fn move_file(src: &Path, dest: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Today's UTC date as `YYYY-MM-DD` string (used as subdirectory name).
+pub fn today_date_dir() -> String {
+    Utc::now().format("%Y-%m-%d").to_string()
+}
+
 /// Build a `void/` destination path with today's UTC date as subdirectory.
 ///
 /// Layout: `{root}/void/{YYYY-MM-DD}/{location}/{location_path}/{filename}`
 pub fn void_dest(root: &Path, path: &str) -> PathBuf {
     let (location, location_path, filename) = Record::decompose_path(path);
-    let date_dir = Utc::now().format("%Y-%m-%d").to_string();
+    let date_dir = today_date_dir();
     if location_path.is_empty() {
         root.join("void").join(&date_dir).join(&location).join(&filename)
     } else {
@@ -102,7 +107,7 @@ impl FilesystemReconciler {
             let src = self.root.join(source_ref);
             let (_, _, filename) = Record::decompose_path(source_ref);
             let dest = match record.state {
-                State::HasError => self.root.join("error").join(&filename),
+                State::HasError => self.root.join("error").join(today_date_dir()).join(&filename),
                 State::IsMissing => self.root.join("missing").join(&filename),
                 _ => self.root.join("archive").join(&filename),
             };
@@ -141,15 +146,17 @@ impl FilesystemReconciler {
             }
         }
 
-        // 2. duplicate_sources: each to duplicates/{location}/{location_path}/{filename}
+        // 2. duplicate_sources: each to duplicates/{date}/{location}/{location_path}/{filename}
         for dup_path in record.duplicate_sources.clone() {
             let src = self.root.join(&dup_path);
             let (location, location_path, filename) = Record::decompose_path(&dup_path);
+            let date_dir = today_date_dir();
             let dest = if location_path.is_empty() {
-                self.root.join("duplicates").join(&location).join(&filename)
+                self.root.join("duplicates").join(&date_dir).join(&location).join(&filename)
             } else {
                 self.root
                     .join("duplicates")
+                    .join(&date_dir)
                     .join(&location)
                     .join(&location_path)
                     .join(&filename)
@@ -397,7 +404,7 @@ mod tests {
         reconciler.reconcile(&mut records);
 
         assert!(!root.join("inbox/test.pdf").exists());
-        assert!(root.join("error/test.pdf").exists());
+        assert!(root.join("error").join(today_date_dir()).join("test.pdf").exists());
     }
 
     #[test]
@@ -520,7 +527,7 @@ mod tests {
         reconciler.reconcile(&mut records);
 
         assert!(!root.join("inbox/dup.pdf").exists());
-        assert!(root.join("duplicates/inbox/dup.pdf").exists());
+        assert!(root.join("duplicates").join(today_date_dir()).join("inbox/dup.pdf").exists());
     }
 
     // -----------------------------------------------------------------------
@@ -743,7 +750,7 @@ mod tests {
         assert!(!root.join(".output/uuid456").exists());
 
         // Duplicate moved
-        assert!(root.join("duplicates/inbox/sub/dup.pdf").exists());
+        assert!(root.join("duplicates").join(today_date_dir()).join("inbox/sub/dup.pdf").exists());
 
         // Deleted moved to void
         let today = Utc::now().format("%Y-%m-%d").to_string();

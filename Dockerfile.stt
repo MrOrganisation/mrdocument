@@ -9,8 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Create app directory
 WORKDIR /app
 
-# Copy stt application
+# Copy stt application and version file
 COPY stt/ /app/
+COPY VERSION /app/VERSION
 
 # Install Python dependencies
 RUN pip install --no-cache-dir -e .
