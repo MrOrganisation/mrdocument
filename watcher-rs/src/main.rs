@@ -585,8 +585,14 @@ fn move_to_duplicates(root: &Path, rel_path: &str) {
 /// Event-driven loop for a single watcher.
 ///
 /// - Startup: always runs a full scan.
-/// - Then waits for inotify events (incremental) or full_scan timer.
-/// - Debounces events by waiting for quiet before running a cycle.
+/// Event loop for a single user watcher.
+///
+/// 1. Wait for the first inotify event (or full-scan timer).
+/// 2. Gather events for `debounce_seconds` (fixed window).
+/// 3. Process the batch.
+/// 4. If the cycle had state transitions, immediately re-run (events
+///    generated during processing are already queued for the next batch).
+/// 5. Full scan runs on its own independent timer.
 async fn run_watcher(
     mut watcher: DocumentWatcherV2,
     full_scan_seconds: f64,
@@ -609,49 +615,62 @@ async fn run_watcher(
     }
 
     let result: Result<(), anyhow::Error> = async {
+        // First cycle is always a full scan.
         let mut had_activity = watcher.run_cycle(true).await?;
         let mut last_full = tokio::time::Instant::now();
 
         loop {
-            // Re-run immediately if the previous cycle had state transitions
+            // If the previous cycle had state transitions, re-run immediately
+            // so downstream steps can act on the new states.  Events generated
+            // during this cycle are already in the inotify buffer for the next.
             if had_activity {
                 had_activity = watcher.run_cycle(false).await?;
                 continue;
             }
 
-            let elapsed = last_full.elapsed().as_secs_f64();
-            let time_to_full = full_scan_seconds - elapsed;
+            // Check if full scan is due.
+            let full_scan_due = last_full.elapsed().as_secs_f64() >= full_scan_seconds;
 
-            if time_to_full <= 0.0 {
-                // Full scan due -- wait for quiet first
-                watcher.wait_for_quiet(debounce_seconds).await;
+            if full_scan_due {
                 had_activity = watcher.run_cycle(true).await?;
                 last_full = tokio::time::Instant::now();
-            } else {
-                // Wait for inotify event or full scan timer
-                let got_event = watcher
-                    .detector
-                    .wait_for_event(time_to_full)
-                    .await;
-                if got_event {
-                    watcher.wait_for_quiet(debounce_seconds).await;
-                    had_activity = watcher.run_cycle(false).await?;
 
-                    // Config change detected -> run full scan
-                    if watcher.pending_full_scan() {
-                        watcher.clear_pending_full_scan();
-                        // Perform config reload
-                        watcher.reload_config(
-                            &|cm| load_smart_folders(cm),
-                            &|root| load_root_smart_folders(root),
-                        );
-                        had_activity = watcher.run_cycle(true).await?;
-                        last_full = tokio::time::Instant::now();
-                    }
-                } else {
-                    // Timer expired, loop back to full scan branch
-                    had_activity = false;
+                // Config change during full scan → reload and re-scan.
+                if watcher.pending_full_scan() {
+                    watcher.clear_pending_full_scan();
+                    watcher.reload_config(
+                        &|cm| load_smart_folders(cm),
+                        &|root| load_root_smart_folders(root),
+                    );
+                    had_activity = watcher.run_cycle(true).await?;
+                    last_full = tokio::time::Instant::now();
                 }
+                continue;
+            }
+
+            // Wait for the first event, up to the time remaining until
+            // the next full scan.
+            let time_to_full = full_scan_seconds - last_full.elapsed().as_secs_f64();
+            let got_event = watcher.detector.wait_for_event(time_to_full).await;
+            if !got_event {
+                continue; // full-scan timer expired, loop back
+            }
+
+            // First event arrived — gather for a fixed debounce window,
+            // then process whatever has accumulated.
+            tokio::time::sleep(tokio::time::Duration::from_secs_f64(debounce_seconds)).await;
+
+            had_activity = watcher.run_cycle(false).await?;
+
+            // Config change during incremental cycle → reload and full-scan.
+            if watcher.pending_full_scan() {
+                watcher.clear_pending_full_scan();
+                watcher.reload_config(
+                    &|cm| load_smart_folders(cm),
+                    &|root| load_root_smart_folders(root),
+                );
+                had_activity = watcher.run_cycle(true).await?;
+                last_full = tokio::time::Instant::now();
             }
         }
     }

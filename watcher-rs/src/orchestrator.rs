@@ -489,16 +489,6 @@ impl DocumentWatcherV2 {
         );
     }
 
-    /// Wait until no events arrive for `debounce_seconds`.
-    pub async fn wait_for_quiet(&mut self, debounce_seconds: f64) {
-        loop {
-            let got_more = self.detector.wait_for_event(debounce_seconds).await;
-            if !got_more {
-                return;
-            }
-        }
-    }
-
     /// Returns true if a pending full scan flag was set (e.g. by config change).
     pub fn pending_full_scan(&self) -> bool {
         self._pending_full_scan
@@ -835,11 +825,6 @@ impl DocumentWatcherV2 {
             || !actionable.is_empty()
             || !modified_ids.is_empty()
             || !new_records.is_empty();
-
-        // Drain event noise from our own filesystem operations (symlink
-        // creation/deletion, file moves).  Re-notifies only if there are
-        // pending events from outside sorted/ (i.e. genuinely external).
-        self.detector.drain_self_generated_events();
 
         let elapsed = t0.elapsed();
         info!(
