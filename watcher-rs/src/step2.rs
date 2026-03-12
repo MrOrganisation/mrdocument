@@ -454,6 +454,9 @@ fn handle_addition<F>(
             }
         }
 
+        // Set date_added to today
+        new_record.date_added = Some(now.date_naive());
+
         created.push(new_record);
     }
 }
@@ -1043,6 +1046,30 @@ mod tests {
         assert_eq!(created[0].original_filename, "new.pdf");
         assert_eq!(created[0].source_hash, "new_hash");
         assert_eq!(created[0].source_paths[0].path, "incoming/new.pdf");
+    }
+
+    #[test]
+    fn test_new_record_has_date_added_set() {
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "incoming/new_with_date.pdf",
+            Some("date_hash"),
+            Some(1024),
+        );
+
+        let (_modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(created.len(), 1);
+        assert!(
+            created[0].date_added.is_some(),
+            "New records should have date_added set"
+        );
+        // date_added should be today's date
+        let today = chrono::Utc::now().date_naive();
+        assert_eq!(created[0].date_added.unwrap(), today);
     }
 
     #[test]

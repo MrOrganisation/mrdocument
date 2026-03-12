@@ -3,7 +3,7 @@
 //! Defines State machine, change tracking types, and the Record struct
 //! that represents a document throughout its lifecycle.
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::str::FromStr;
@@ -194,6 +194,9 @@ pub struct Record {
 
     // Timestamps (read-only from DB; not written back by save_record)
     pub updated_at: Option<DateTime<Utc>>,
+
+    // Date the document was first added (YYYY-MM-DD)
+    pub date_added: Option<NaiveDate>,
 }
 
 impl Record {
@@ -222,6 +225,7 @@ impl Record {
             deleted_paths: Vec::new(),
             username: None,
             updated_at: None,
+            date_added: None,
         }
     }
 
@@ -316,6 +320,15 @@ impl Record {
     pub fn current_filename(&self) -> Option<String> {
         self.current_file()
             .map(|cf| Self::decompose_path(&cf.path).2)
+    }
+
+    /// The effective date_added: returns `date_added` if set, otherwise
+    /// falls back to the date portion of the most recent source path timestamp.
+    pub fn effective_date_added(&self) -> Option<NaiveDate> {
+        self.date_added.or_else(|| {
+            self.source_file()
+                .map(|pe| pe.timestamp.date_naive())
+        })
     }
 
     /// Reset all temporary fields to their defaults.
@@ -594,5 +607,63 @@ mod tests {
         assert_eq!(item.path, "archive/old.pdf");
         assert!(item.hash.is_none());
         assert!(item.size.is_none());
+    }
+
+    #[test]
+    fn test_date_added_defaults_to_none() {
+        let rec = Record::new("test.pdf".into(), "hash".into());
+        assert!(rec.date_added.is_none());
+    }
+
+    #[test]
+    fn test_effective_date_added_uses_explicit() {
+        let mut rec = Record::new("test.pdf".into(), "hash".into());
+        let date = NaiveDate::from_ymd_opt(2025, 6, 15).unwrap();
+        rec.date_added = Some(date);
+        // Even with source paths, explicit date_added takes priority
+        rec.source_paths.push(PathEntry {
+            path: "archive/test.pdf".into(),
+            timestamp: "2024-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+        });
+        assert_eq!(rec.effective_date_added(), Some(date));
+    }
+
+    #[test]
+    fn test_effective_date_added_falls_back_to_source_timestamp() {
+        let mut rec = Record::new("test.pdf".into(), "hash".into());
+        let ts = "2025-03-20T14:30:00Z".parse::<DateTime<Utc>>().unwrap();
+        rec.source_paths.push(PathEntry {
+            path: "archive/test.pdf".into(),
+            timestamp: ts,
+        });
+        assert_eq!(
+            rec.effective_date_added(),
+            Some(NaiveDate::from_ymd_opt(2025, 3, 20).unwrap()),
+        );
+    }
+
+    #[test]
+    fn test_effective_date_added_none_when_no_data() {
+        let rec = Record::new("test.pdf".into(), "hash".into());
+        assert!(rec.effective_date_added().is_none());
+    }
+
+    #[test]
+    fn test_effective_date_added_uses_most_recent_source() {
+        let mut rec = Record::new("test.pdf".into(), "hash".into());
+        rec.source_paths = vec![
+            PathEntry {
+                path: "incoming/test.pdf".into(),
+                timestamp: "2025-01-01T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            },
+            PathEntry {
+                path: "archive/test.pdf".into(),
+                timestamp: "2025-06-15T00:00:00Z".parse::<DateTime<Utc>>().unwrap(),
+            },
+        ];
+        assert_eq!(
+            rec.effective_date_added(),
+            Some(NaiveDate::from_ymd_opt(2025, 6, 15).unwrap()),
+        );
     }
 }

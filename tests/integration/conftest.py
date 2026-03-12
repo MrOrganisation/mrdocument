@@ -65,6 +65,7 @@ class TestConfig:
     trash_dir: Path = field(init=False)
     void_dir: Path = field(init=False)
     missing_dir: Path = field(init=False)
+    history_dir: Path = field(init=False)
     costs_dir: Path = field(init=False)
     generated_dir: Path = field(init=False)
 
@@ -81,6 +82,7 @@ class TestConfig:
         self.trash_dir = self.sync_folder / "trash"
         self.void_dir = self.sync_folder / "void"
         self.missing_dir = self.sync_folder / "missing"
+        self.history_dir = self.sync_folder / "history"
         self.costs_dir = INTEGRATION_DIR / "costs"
         self.generated_dir = INTEGRATION_DIR / "generated"
 

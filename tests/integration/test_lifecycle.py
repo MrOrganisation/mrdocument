@@ -1221,3 +1221,167 @@ class TestMigrationDedup:
             f"Expected >= 4 files in duplicates/ (2 losers x 2 files), "
             f"found {len(dup_files)}: {[str(f) for f in dup_files]}"
         )
+
+
+# ===================================================================
+# Date Added & History Folder
+# ===================================================================
+
+
+class TestDateAddedBackfill:
+    """Test that date_added is backfilled for existing records on restart.
+
+    Processes a file, NULLs out date_added in the DB, restarts the watcher,
+    and verifies the field is repopulated from the source path timestamp.
+    """
+
+    def test_date_added_backfill_on_restart(
+        self, test_config: TestConfig, clean_working_dirs,
+    ):
+        # 1. Process a text file through the pipeline
+        file_stem = "history_test_doc"
+        content = f"History test document. Unique: {uuid.uuid4().hex}"
+        write_test_file(
+            test_config.incoming_dir / f"{file_stem}.txt",
+            content,
+        )
+
+        # Poll for processed output
+        processed = poll_for_file(
+            test_config.processed_dir,
+            "arbeit-*2025-04-10*.txt",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_names={f"{file_stem}.txt"},
+        )
+        assert processed is not None, "File not found in processed/ within timeout"
+
+        # Move to reviewed → sorted
+        existing_sorted = set(test_config.sorted_dir.rglob("*2025-04-10*.txt"))
+        reviewed_path = test_config.reviewed_dir / processed.name
+        shutil.move(str(processed), reviewed_path)
+
+        sorted_file = poll_for_file_recursive(
+            test_config.sorted_dir,
+            "*2025-04-10*.txt",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing_sorted,
+        )
+        assert sorted_file is not None, "File not found in sorted/ within timeout"
+
+        # Wait for DB to be fully updated
+        time.sleep(2)
+
+        # 2. Verify date_added is set
+        row = db_exec(
+            "SELECT date_added "
+            "FROM mrdocument.documents_v2 "
+            f"WHERE original_filename = '{file_stem}.txt'"
+        )
+        assert row and row != "", f"date_added should be set, got: {row}"
+
+        # 3. NULL out date_added
+        db_exec(
+            "UPDATE mrdocument.documents_v2 "
+            f"SET date_added = NULL "
+            f"WHERE original_filename = '{file_stem}.txt'"
+        )
+
+        # Verify it's NULL
+        row = db_exec(
+            "SELECT date_added IS NULL "
+            "FROM mrdocument.documents_v2 "
+            f"WHERE original_filename = '{file_stem}.txt'"
+        )
+        assert row == "t", f"date_added should be NULL, got: {row}"
+
+        # 4. Restart watcher (triggers backfill)
+        restart_watcher()
+
+        # 5. Poll until date_added is backfilled
+        deadline = time.monotonic() + test_config.max_timeout
+        backfilled = False
+        while time.monotonic() < deadline:
+            row = db_exec(
+                "SELECT date_added "
+                "FROM mrdocument.documents_v2 "
+                f"WHERE original_filename = '{file_stem}.txt'"
+            )
+            if row and row != "":
+                backfilled = True
+                break
+            time.sleep(test_config.poll_interval)
+
+        assert backfilled, "date_added was not backfilled after restart"
+
+
+class TestHistorySymlinks:
+    """Test that history/YYYY-MM-DD/ symlinks are created for completed files."""
+
+    def test_history_symlink_created(
+        self, test_config: TestConfig, clean_working_dirs,
+    ):
+        # 1. Process a text file through the pipeline to sorted/
+        file_stem = "history_test_doc"
+        content = f"History symlink test document. Unique: {uuid.uuid4().hex}"
+        write_test_file(
+            test_config.incoming_dir / f"{file_stem}.txt",
+            content,
+        )
+
+        # Poll for processed output
+        processed = poll_for_file(
+            test_config.processed_dir,
+            "arbeit-*2025-04-10*.txt",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_names={f"{file_stem}.txt"},
+        )
+        assert processed is not None, "File not found in processed/ within timeout"
+
+        # Move to reviewed → sorted
+        existing_sorted = set(test_config.sorted_dir.rglob("*2025-04-10*.txt"))
+        reviewed_path = test_config.reviewed_dir / processed.name
+        shutil.move(str(processed), reviewed_path)
+
+        sorted_file = poll_for_file_recursive(
+            test_config.sorted_dir,
+            "*2025-04-10*.txt",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing_sorted,
+        )
+        assert sorted_file is not None, "File not found in sorted/ within timeout"
+
+        # 2. Wait and check for history symlink
+        history_dir = test_config.sync_folder / "history"
+
+        # Poll for any symlink in history/ pointing to this file
+        deadline = time.monotonic() + 60.0
+        history_link = None
+        while time.monotonic() < deadline:
+            if history_dir.exists():
+                for date_dir in history_dir.iterdir():
+                    if date_dir.is_dir():
+                        for link in date_dir.iterdir():
+                            if link.is_symlink() and link.name == sorted_file.name:
+                                history_link = link
+                                break
+                    if history_link:
+                        break
+            if history_link:
+                break
+            time.sleep(test_config.poll_interval)
+
+        assert history_link is not None, (
+            f"History symlink not found for {sorted_file.name} "
+            f"in history/"
+        )
+
+        # 3. Verify symlink resolves to the sorted file
+        resolved = history_link.resolve()
+        assert resolved == sorted_file.resolve(), (
+            f"History symlink should point to sorted file: "
+            f"{resolved} != {sorted_file.resolve()}"
+        )

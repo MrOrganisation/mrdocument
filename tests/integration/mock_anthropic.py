@@ -216,6 +216,13 @@ DOCUMENT_METADATA = {
         "sender": "Schulze GmbH",
         "date": "2025-01-20",
     },
+    # History folder / date_added backfill test
+    "history_test_doc": {
+        "context": "arbeit",
+        "type": "Rechnung",
+        "sender": "Keller und Partner",
+        "date": "2025-04-10",
+    },
     # M4A source_filename pattern test
     "privatnotiz": {
         "context": "privat",

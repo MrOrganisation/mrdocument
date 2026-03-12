@@ -14,6 +14,7 @@ mod step3;
 mod step4;
 mod step5;
 mod step6;
+mod step7;
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
@@ -61,6 +62,7 @@ const REQUIRED_DIRS: &[&str] = &[
     "void",
     "missing",
     "duplicates",
+    "history",
 ];
 
 // ---------------------------------------------------------------------------
@@ -604,6 +606,13 @@ async fn run_watcher(
             "[{}] Content hash backfill failed: {}",
             watcher.name, e
         );
+    }
+
+    // Backfill date_added for existing records
+    match watcher.db.backfill_date_added(Some(&watcher.name)).await {
+        Ok(n) if n > 0 => info!("[{}] Backfilled date_added for {} records", watcher.name, n),
+        Err(e) => error!("[{}] date_added backfill failed: {}", watcher.name, e),
+        _ => {}
     }
 
     // Deduplicate records that share the same content hash (post-migration)
