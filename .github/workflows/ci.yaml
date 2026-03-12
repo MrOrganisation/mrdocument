@@ -20,7 +20,9 @@ jobs:
         run: apk add --no-cache make git
 
       - name: Checkout
-        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "http://gitea-token:${GITEA_TOKEN}@git:3000/${GITHUB_REPOSITORY}.git" .
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
 
       - name: Build and push
         run: make push REGISTRY=127.0.0.1:5000
@@ -35,7 +37,9 @@ jobs:
         run: apk add --no-cache make git
 
       - name: Checkout
-        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
+        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "http://gitea-token:${GITEA_TOKEN}@git:3000/${GITHUB_REPOSITORY}.git" .
+        env:
+          GITEA_TOKEN: ${{ secrets.GITEA_TOKEN }}
 
       - name: Release
         run: make release REGISTRY=127.0.0.1:5000
