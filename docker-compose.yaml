@@ -10,7 +10,7 @@ services:
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
-        - ghcr.io/mrorganisation/ocrmypdf:latest
+        - localhost:5000/ocrmypdf:latest
     image: ocrmypdf:latest-custom
     container_name: ocrmypdf
     restart: unless-stopped
@@ -34,7 +34,7 @@ services:
       context: .
       dockerfile: Dockerfile.anthropic-adapter
       cache_from:
-        - ghcr.io/mrorganisation/anthropic-adapter:latest
+        - localhost:5000/anthropic-adapter:latest
     image: anthropic-adapter:latest-custom
     container_name: anthropic-adapter
     restart: unless-stopped
@@ -56,7 +56,7 @@ services:
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
-        - ghcr.io/mrorganisation/mrdocument-service:latest
+        - localhost:5000/mrdocument-service:latest
     image: mrdocument-service:latest-custom
     container_name: mrdocument-service
     restart: unless-stopped
@@ -93,7 +93,7 @@ services:
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
-        - ghcr.io/mrorganisation/stt:latest
+        - localhost:5000/stt:latest
     image: stt:latest-custom
     container_name: stt
     restart: unless-stopped
@@ -155,7 +155,7 @@ services:
       context: .
       dockerfile: Dockerfile.db
       cache_from:
-        - ghcr.io/mrorganisation/mrdocument-db:latest
+        - localhost:5000/mrdocument-db:latest
     image: mrdocument-db:latest-custom
     container_name: mrdocument-db
     restart: unless-stopped
@@ -182,7 +182,7 @@ services:
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
       cache_from:
-        - ghcr.io/mrorganisation/mrdocument-watcher:latest
+        - localhost:5000/mrdocument-watcher:latest
     image: mrdocument-watcher:latest-custom
     container_name: mrdocument-watcher
     restart: unless-stopped

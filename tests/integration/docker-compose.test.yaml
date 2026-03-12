@@ -1,3 +1,7 @@
+networks:
+  mrdocument-test-net:
+    driver: bridge
+
 services:
   mrdocument-test:
     build:
@@ -8,6 +12,8 @@ services:
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
       ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+    networks:
+      - mrdocument-test-net
     volumes:
       - ./testdata:/data/testuser
       - ./logs:/var/log

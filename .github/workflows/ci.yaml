@@ -7,53 +7,35 @@ on:
       - develop
       - 'feature/*'
 
-permissions:
-  contents: read
-  packages: write
+defaults:
+  run:
+    shell: sh
 
 jobs:
-  push:
-    runs-on: ubuntu-latest
+  build:
+    runs-on: empedokles
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Install tools
+        run: apk add --no-cache make git
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          driver-opts: network=host
+      - name: Checkout
+        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Pull cache images
-        run: |
-          BRANCH=$(echo "${GITHUB_REF#refs/heads/}" | tr '/' '-')
-          for img in mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db; do
-            docker pull ghcr.io/mrorganisation/$img:latest-$BRANCH || docker pull ghcr.io/mrorganisation/$img:latest || true
-          done
-
-      - name: Push
-        run: make push
+      - name: Build and push
+        run: make push REGISTRY=127.0.0.1:5000
 
   release:
     if: github.ref == 'refs/heads/main'
-    needs: push
-    runs-on: ubuntu-latest
+    needs: build
+    runs-on: empedokles
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Install tools
+        run: apk add --no-cache make git
 
-      - name: Log in to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Checkout
+        run: git clone --depth 1 --branch "${GITHUB_REF_NAME}" "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}.git" .
 
       - name: Release
-        run: make release
+        run: make release REGISTRY=127.0.0.1:5000

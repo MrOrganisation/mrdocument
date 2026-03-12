@@ -1,8 +1,14 @@
+networks:
+  mrdocument-test-net:
+    driver: bridge
+
 services:
   mock-anthropic:
     build:
       context: ../..
       dockerfile: tests/integration/Dockerfile.mock-anthropic
+    networks:
+      - mrdocument-test-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 5s
@@ -13,6 +19,8 @@ services:
     build:
       context: ../..
       dockerfile: tests/integration/Dockerfile.mock-elevenlabs
+    networks:
+      - mrdocument-test-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       interval: 5s
@@ -23,6 +31,8 @@ services:
     build:
       context: ../..
       dockerfile: tests/integration/Dockerfile.mock-ocr
+    networks:
+      - mrdocument-test-net
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:5000/health"]
       interval: 5s
@@ -31,6 +41,8 @@ services:
 
   mrdocument-db:
     image: postgres:17-alpine
+    networks:
+      - mrdocument-test-net
     environment:
       POSTGRES_DB: mrdocument
       POSTGRES_USER: mrdocument
@@ -46,6 +58,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.stt
+    networks:
+      - mrdocument-test-net
     environment:
       ELEVENLABS_BASE_URL: http://mock-elevenlabs:8080/v1
       ELEVENLABS_API_KEY: mock-key
@@ -65,6 +79,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.service-rs
+    networks:
+      - mrdocument-test-net
     environment:
       OCR_URL: http://mock-ocr:5000
       ANTHROPIC_BASE_URL: http://mock-anthropic:8080
@@ -91,6 +107,8 @@ services:
     build:
       context: ../..
       dockerfile: Dockerfile.watcher
+    networks:
+      - mrdocument-test-net
     environment:
       MRDOCUMENT_URL: http://mrdocument-service:8000
       STT_URL: http://stt:8000

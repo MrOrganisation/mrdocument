@@ -21,7 +21,7 @@ VERSION    := $(shell cat VERSION)
 BRANCH     := $(shell git rev-parse --abbrev-ref HEAD)
 COMMIT     := $(shell git rev-parse --short HEAD)
 IMAGE_TAG  := $(VERSION)-$(BRANCH)-$(COMMIT)
-REGISTRY   := ghcr.io/mrorganisation
+REGISTRY   := 127.0.0.1:5000
 RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter mrdocument-db
 
 # ==============================================================================
@@ -89,6 +89,8 @@ define buildx_push
 		-f $(1) \
 		-t $(REGISTRY)/$(2):$(IMAGE_TAG) \
 		-t $(REGISTRY)/$(2):latest-$(BRANCH) \
+		--cache-from type=registry,ref=$(REGISTRY)/$(2):buildcache \
+		--cache-to type=registry,ref=$(REGISTRY)/$(2):buildcache,mode=max \
 		--push \
 		.
 endef
@@ -103,12 +105,11 @@ push-amd64:
 
 release-amd64:
 	@for img in $(RELEASE_IMAGES); do \
-		df=$$(echo $$img | sed 's/mrdocument-//'); \
 		case $$img in \
 			mrdocument-service) df=Dockerfile.service-rs ;; \
 			mrdocument-watcher) df=Dockerfile.watcher ;; \
 			mrdocument-db) df=Dockerfile.db ;; \
-			*) df=Dockerfile.$$df ;; \
+			*) df=Dockerfile.$$(echo $$img | sed 's/mrdocument-//') ;; \
 		esac; \
 		docker buildx build \
 			--builder $(BUILDX_BUILDER) \
@@ -117,20 +118,32 @@ release-amd64:
 			-t $(REGISTRY)/$$img:$(IMAGE_TAG) \
 			-t $(REGISTRY)/$$img:latest-$(BRANCH) \
 			-t $(REGISTRY)/$$img:latest \
+			--cache-from type=registry,ref=$(REGISTRY)/$$img:buildcache \
+			--cache-to type=registry,ref=$(REGISTRY)/$$img:buildcache,mode=max \
 			--push \
 			. ; \
 	done
 
 # ==============================================================================
-# Push to GHCR
+# Push to registry (with layer cache)
 # ==============================================================================
 
-push: build
+push:
 	@for img in $(RELEASE_IMAGES); do \
-		docker tag $$img:latest-custom $(REGISTRY)/$$img:$(IMAGE_TAG); \
-		docker tag $$img:latest-custom $(REGISTRY)/$$img:latest-$(BRANCH); \
-		docker push $(REGISTRY)/$$img:$(IMAGE_TAG); \
-		docker push $(REGISTRY)/$$img:latest-$(BRANCH); \
+		case $$img in \
+			mrdocument-service) df=Dockerfile.service-rs ;; \
+			mrdocument-watcher) df=Dockerfile.watcher ;; \
+			mrdocument-db) df=Dockerfile.db ;; \
+			*) df=Dockerfile.$$(echo $$img | sed 's/mrdocument-//') ;; \
+		esac; \
+		docker build \
+			-f $$df \
+			--build-arg GIT_COMMIT=$(COMMIT) \
+			-t $(REGISTRY)/$$img:$(IMAGE_TAG) \
+			-t $(REGISTRY)/$$img:latest-$(BRANCH) \
+			. && \
+		docker push $(REGISTRY)/$$img:$(IMAGE_TAG) && \
+		docker push $(REGISTRY)/$$img:latest-$(BRANCH) ; \
 	done
 
 # ==============================================================================
