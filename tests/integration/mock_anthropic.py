@@ -177,6 +177,13 @@ DOCUMENT_METADATA = {
         "sender": "Fischer AG",
         "date": "2025-12-08",
     },
+    # Sorted → trash lifecycle test
+    "sorted_trash_doc": {
+        "context": "arbeit",
+        "type": "Rechnung",
+        "sender": "Fischer AG",
+        "date": "2025-12-15",
+    },
     # Smart folder lifecycle tests
     "sf_move_doc": {
         "context": "arbeit",

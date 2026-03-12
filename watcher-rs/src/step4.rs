@@ -701,6 +701,143 @@ mod tests {
     // FilesystemReconciler: multiple operations in one record
     // -----------------------------------------------------------------------
 
+    /// Sorted → archive → trash lifecycle: verify archive copy is voided.
+    ///
+    /// Simulates the state a record would be in after:
+    /// 1. File placed in sorted/ → moved to archive/ during processing
+    /// 2. Processing complete → IsComplete with archive source_paths
+    /// 3. User puts copy of source in trash/ → NeedsDeletion
+    ///
+    /// Step4 should void both the archive copy and the trash copy.
+    #[test]
+    fn test_needs_deletion_from_sorted_voids_archive() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Set up archive copy (from processing) and trash copy (user action)
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::create_dir_all(root.join("trash")).unwrap();
+        fs::create_dir_all(root.join("sorted/ga/schmidt")).unwrap();
+        fs::write(root.join("archive/file.m4a"), b"audio data").unwrap();
+        fs::write(root.join("trash/file.m4a"), b"audio data").unwrap();
+        fs::write(
+            root.join("sorted/ga/schmidt/ga-2026-01-10-file.txt"),
+            b"transcript",
+        )
+        .unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("file.m4a", "src_hash");
+        r.state = State::NeedsDeletion;
+        r.source_paths = vec![
+            PathEntry {
+                path: "archive/file.m4a".into(),
+                timestamp: Utc::now(),
+            },
+            PathEntry {
+                path: "trash/file.m4a".into(),
+                timestamp: Utc::now(),
+            },
+        ];
+        r.current_paths = vec![PathEntry {
+            path: "sorted/ga/schmidt/ga-2026-01-10-file.txt".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        let today = today_date_dir();
+        // Archive copy should be voided
+        assert!(
+            !root.join("archive/file.m4a").exists(),
+            "archive copy should be removed"
+        );
+        assert!(
+            root.join("void").join(&today).join("archive/file.m4a").exists(),
+            "archive copy should be in void/"
+        );
+        // Trash copy should be voided
+        assert!(
+            !root.join("trash/file.m4a").exists(),
+            "trash copy should be removed"
+        );
+        // Current (transcript) should be voided
+        assert!(
+            !root.join("sorted/ga/schmidt/ga-2026-01-10-file.txt").exists(),
+            "sorted transcript should be removed"
+        );
+    }
+
+    /// Demonstrates the duplicate archive entry issue that causes warnings.
+    ///
+    /// When a file enters via sorted/, the IsNew reconcile adds an
+    /// "archive/filename" path entry.  Step4 then replaces the sorted/ entry
+    /// with another "archive/filename" entry, creating a duplicate.
+    /// On trash deletion, step4 iterates both entries: the first succeeds,
+    /// the second warns "Source file not found".
+    ///
+    /// The archive file IS cleaned up (first entry), but the warning is
+    /// cosmetically confusing.
+    #[test]
+    fn test_needs_deletion_duplicate_archive_entries_warns() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        fs::create_dir_all(root.join("archive")).unwrap();
+        fs::create_dir_all(root.join("trash")).unwrap();
+        fs::create_dir_all(root.join("sorted/ga/schmidt")).unwrap();
+        fs::write(root.join("archive/file.m4a"), b"audio data").unwrap();
+        fs::write(root.join("trash/file.m4a"), b"audio data").unwrap();
+        fs::write(
+            root.join("sorted/ga/schmidt/ga-2026-01-10-file.txt"),
+            b"transcript",
+        )
+        .unwrap();
+
+        let reconciler = FilesystemReconciler::new(root.clone());
+        let mut r = make_record("file.m4a", "src_hash");
+        r.state = State::NeedsDeletion;
+        // Two identical archive entries (the real-world scenario):
+        // Entry 1: added by step4 when it moved sorted/ → archive/
+        // Entry 2: added by step2 IsNew reconcile as a "target" marker
+        r.source_paths = vec![
+            PathEntry {
+                path: "archive/file.m4a".into(),
+                timestamp: Utc::now(),
+            },
+            PathEntry {
+                path: "archive/file.m4a".into(),
+                timestamp: Utc::now(),
+            },
+            PathEntry {
+                path: "trash/file.m4a".into(),
+                timestamp: Utc::now(),
+            },
+        ];
+        r.current_paths = vec![PathEntry {
+            path: "sorted/ga/schmidt/ga-2026-01-10-file.txt".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut records = vec![r];
+        reconciler.reconcile(&mut records);
+
+        let today = today_date_dir();
+        // Despite the duplicate, the archive file IS cleaned up
+        assert!(
+            !root.join("archive/file.m4a").exists(),
+            "archive copy should be removed (first entry succeeds)"
+        );
+        assert!(
+            root.join("void").join(&today).join("archive/file.m4a").exists(),
+            "archive copy should be in void/"
+        );
+        // Trash and sorted output also voided
+        assert!(!root.join("trash/file.m4a").exists());
+        assert!(!root.join("sorted/ga/schmidt/ga-2026-01-10-file.txt").exists());
+    }
+
     #[test]
     fn test_multiple_operations_in_one_record() {
         let tmp = TempDir::new().unwrap();

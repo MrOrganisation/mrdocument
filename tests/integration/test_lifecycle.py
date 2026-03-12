@@ -463,6 +463,88 @@ class TestTrashDeletion:
         assert void_match is not None, "No files found in void/"
 
 
+class TestTrashFromSorted:
+    """File added directly to sorted/, then source copy placed in trash/.
+
+    Verifies that the archive copy of the source is cleaned up when the
+    user puts a copy of the original source file into trash/.
+    """
+
+    def test_sorted_then_trash_cleans_archive(
+        self, test_config: TestConfig, clean_working_dirs,
+    ):
+        file_stem = "sorted_trash_doc"
+        context = "arbeit"
+        date = "2025-12-15"
+
+        # --- Phase 1: Place file directly in sorted/{context}/ ---
+        content = f"Test document {file_stem}. Unique: {uuid.uuid4().hex}"
+        sorted_ctx_dir = test_config.sorted_dir / context
+        sorted_ctx_dir.mkdir(parents=True, exist_ok=True)
+        source_path = sorted_ctx_dir / f"{file_stem}.txt"
+        write_test_file(source_path, content)
+
+        # File should be moved to archive/ and processed output placed
+        # back in sorted/
+        archive_file = poll_for_file(
+            test_config.archive_dir,
+            f"*{file_stem}*",
+            test_config.poll_interval,
+            test_config.max_timeout,
+        )
+        assert archive_file is not None, (
+            f"Source not found in archive/ within {test_config.max_timeout}s"
+        )
+
+        # Wait for the processed output to land in sorted/
+        pattern = f"{context}-*{date}*.txt"
+        sorted_output = poll_for_file_recursive(
+            test_config.sorted_dir,
+            pattern,
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths={source_path},
+        )
+        assert sorted_output is not None, (
+            f"Processed output not found in sorted/ within "
+            f"{test_config.max_timeout}s (pattern: {pattern})"
+        )
+
+        # Let watcher settle
+        time.sleep(2)
+
+        # --- Phase 2: Put a copy of the source in trash/ ---
+        trash_dest = test_config.trash_dir / f"{file_stem}.txt"
+        test_config.trash_dir.mkdir(parents=True, exist_ok=True)
+        # Write same content to trigger source_hash match
+        write_test_file(trash_dest, content)
+
+        # --- Phase 3: Verify cleanup ---
+        # Archive copy should be cleaned up
+        assert poll_until_gone(
+            archive_file,
+            test_config.poll_interval,
+            test_config.max_timeout,
+        ), (
+            f"Archive file {archive_file.name} should be removed after "
+            "source placed in trash/"
+        )
+
+        # Sorted output should be cleaned up
+        assert poll_until_gone(
+            sorted_output,
+            test_config.poll_interval,
+            test_config.max_timeout,
+        ), "Sorted output should be removed after trash"
+
+        # Trash file should be moved to void/
+        assert poll_until_gone(
+            trash_dest,
+            test_config.poll_interval,
+            test_config.max_timeout,
+        ), "Trash file should be moved to void/"
+
+
 # ===================================================================
 # Sorted Directory User Interactions
 # ===================================================================

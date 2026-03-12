@@ -3027,6 +3027,143 @@ mod tests {
     // TestReconcileContextFieldNames (1 test)
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // Sorted → archive → trash lifecycle (regression)
+    // -----------------------------------------------------------------------
+
+    /// Full lifecycle: file added to sorted/ → processed → trash copy added.
+    /// Verifies that archive source_paths are preserved when trash triggers
+    /// NeedsDeletion, so step4 can void the archive copy.
+    #[test]
+    fn test_sorted_trash_lifecycle_preserves_archive_source_paths() {
+        // --- Phase 1: File appears in sorted/ ---
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let sorted_change = ChangeItem {
+            event_type: EventType::Addition,
+            path: "sorted/ga/file.m4a".to_string(),
+            hash: Some("src_hash_123".to_string()),
+            content_hash: Some("content_abc".to_string()),
+            size: Some(10000),
+        };
+
+        let (_modified, created) =
+            preprocess(&[sorted_change], &mut records, &mut new_records, _noop_sidecar);
+        assert_eq!(created.len(), 1, "Should create one new record");
+        records.push(created.into_iter().next().unwrap());
+
+        // --- Phase 2: Reconcile IsNew → NeedsProcessing ---
+        let result = reconcile(&mut records[0], None, None, None);
+        assert!(result.is_some());
+        assert_eq!(records[0].state, State::NeedsProcessing);
+        assert_eq!(
+            records[0].source_reference.as_deref(),
+            Some("sorted/ga/file.m4a"),
+            "source_reference should point to sorted/ path"
+        );
+        assert!(
+            records[0].source_paths.iter().any(|pe| pe.path == "archive/file.m4a"),
+            "archive/ entry should be added to source_paths"
+        );
+
+        // --- Phase 3: Simulate step4 moving sorted → archive ---
+        // (In real code, FilesystemReconciler does this. Here we simulate.)
+        records[0].source_reference = None; // cleared by clear_temporary_fields next cycle
+        // Replace the sorted/ entry with archive/ (as step4 would do)
+        if let Some(idx) = records[0].source_paths.iter().position(|pe| pe.path == "sorted/ga/file.m4a") {
+            let old = records[0].source_paths[idx].clone();
+            records[0].missing_source_paths.push(old);
+            records[0].source_paths[idx] = PathEntry {
+                path: "archive/file.m4a".to_string(),
+                timestamp: _ts(1),
+            };
+        }
+
+        // --- Phase 4: Processing complete — output appears in .output/ ---
+        let output_change = ChangeItem {
+            event_type: EventType::Addition,
+            path: ".output/uuid-sorted-test".to_string(),
+            hash: Some("output_hash".to_string()),
+            content_hash: Some("output_content".to_string()),
+            size: Some(5000),
+        };
+        records[0].output_filename = Some("uuid-sorted-test".to_string());
+        let sidecar = json!({
+            "context": "ga",
+            "metadata": {"date": "2026-01-10"},
+            "assigned_filename": "ga-2026-01-10-file.txt",
+        });
+        let (_modified, _created) =
+            preprocess(&[output_change], &mut records, &mut new_records, |_| sidecar.clone());
+
+        assert!(records[0].output_filename.is_none(), "output_filename consumed");
+        assert_eq!(records[0].current_paths.len(), 1);
+        assert_eq!(records[0].current_paths[0].path, ".output/uuid-sorted-test");
+
+        // --- Phase 5: Reconcile moves .output → sorted target ---
+        let result = reconcile(&mut records[0], None, None, None);
+        assert!(result.is_some());
+        assert!(records[0].target_path.is_some(), "target_path should be set");
+        assert!(records[0].current_reference.is_some(), "current_reference should be set");
+
+        // Simulate step4 moving .output → sorted/
+        records[0].current_paths[0] = PathEntry {
+            path: "sorted/ga/schmidt/ga-2026-01-10-file.txt".to_string(),
+            timestamp: _ts(2),
+        };
+        records[0].current_reference = None;
+        records[0].target_path = None;
+
+        // --- Phase 6: Next reconcile picks up sorted/ current → IsComplete ---
+        let result = reconcile(&mut records[0], None, None, None);
+        assert!(result.is_some());
+        assert_eq!(records[0].state, State::IsComplete);
+
+        // Verify archive source_paths are intact at this point
+        let archive_count = records[0]
+            .source_paths
+            .iter()
+            .filter(|pe| pe.path.starts_with("archive/"))
+            .count();
+        assert!(archive_count > 0, "archive source_paths should exist before trash");
+
+        // --- Phase 7: Copy of source .m4a appears in trash/ ---
+        let trash_change = ChangeItem {
+            event_type: EventType::Addition,
+            path: "trash/file.m4a".to_string(),
+            hash: Some("src_hash_123".to_string()), // same source_hash
+            content_hash: Some("content_abc".to_string()),
+            size: Some(10000),
+        };
+        let (_modified, _created) =
+            preprocess(&[trash_change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert!(
+            records[0].source_paths.iter().any(|pe| pe.path == "trash/file.m4a"),
+            "trash/ should be added to source_paths"
+        );
+
+        // --- Phase 8: Reconcile detects trash → NeedsDeletion ---
+        let result = reconcile(&mut records[0], None, None, None);
+        assert!(result.is_some());
+        assert_eq!(records[0].state, State::NeedsDeletion);
+
+        // THE KEY ASSERTION: archive source_paths must survive the
+        // trash → NeedsDeletion transition so step4 can void them.
+        let archive_paths: Vec<&str> = records[0]
+            .source_paths
+            .iter()
+            .filter(|pe| pe.path.starts_with("archive/"))
+            .map(|pe| pe.path.as_str())
+            .collect();
+        assert!(
+            !archive_paths.is_empty(),
+            "BUG: archive source_paths lost during trash → NeedsDeletion transition. \
+             Step4 won't be able to void the archive copy. Got source_paths: {:?}",
+            records[0].source_paths.iter().map(|pe| &pe.path).collect::<Vec<_>>()
+        );
+    }
+
     #[test]
     fn test_sorted_with_context_field_names_missing_fields_added() {
         let mut record = _make_record();
