@@ -77,19 +77,17 @@ fn parse_contexts(data: &Value) -> Option<Vec<Value>> {
         let mut ctx = item.clone();
         let filename_val = obj.get("filename");
         if let Some(Value::Array(arr)) = filename_val {
-            // Conditional list - find default
-            let mut default_pattern = None;
-            for entry in arr {
-                if let Some(eobj) = entry.as_object() {
-                    if eobj.contains_key("pattern") && !eobj.contains_key("match") {
-                        default_pattern = eobj.get("pattern").cloned();
-                        break;
-                    }
-                }
+            // Conditional list — validate that it has a default (no "match") entry
+            let has_default = arr.iter().any(|entry| {
+                entry
+                    .as_object()
+                    .map(|eobj| eobj.contains_key("pattern") && !eobj.contains_key("match"))
+                    .unwrap_or(false)
+            });
+            if !has_default {
+                ctx["filename"] = json!("{context}-{date}");
             }
-            if let Some(pattern) = default_pattern {
-                ctx["filename"] = pattern;
-            }
+            // Otherwise keep the array as-is for resolve_filename_pattern
         }
         if ctx.get("filename").and_then(|v| v.as_str()).is_none()
             && !ctx.get("filename").map(|v| v.is_array()).unwrap_or(false)
@@ -687,9 +685,8 @@ async fn process_transcript_handler(
         let pattern = contexts.iter()
             .find(|ctx| ctx.get("name").and_then(|v| v.as_str()) == pc_context.as_deref())
             .and_then(|ctx| ctx.get("audio_filename").or_else(|| ctx.get("filename")))
-            .and_then(|v| v.as_str())
-            .unwrap_or_else(|| contexts.first().and_then(|c| c.get("filename").and_then(|v| v.as_str())).unwrap_or("{date}-{context}"))
-            .to_string();
+            .map(|raw| ai::resolve_filename_pattern(raw, Some(&filename)))
+            .unwrap_or_else(|| "{date}-{context}".to_string());
 
         (metadata, pattern)
     } else {
@@ -1096,4 +1093,65 @@ async fn main() {
         .with_graceful_shutdown(shutdown)
         .await
         .unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_contexts_preserves_conditional_filename_array() {
+        let contexts = json!([{
+            "name": "testctx",
+            "description": "Test context",
+            "filename": [
+                {"match": ".*\\.(mp3|m4a)", "pattern": "{context}-{source_filename}-{date}"},
+                {"pattern": "{context}-{type}-{date}"}
+            ],
+            "fields": {
+                "type": {
+                    "instructions": "Determine type",
+                    "candidates": ["A", "B"],
+                    "allow_new_candidates": false
+                }
+            }
+        }]);
+
+        let parsed = parse_contexts(&contexts).unwrap();
+        assert_eq!(parsed.len(), 1);
+
+        let filename_field = parsed[0].get("filename").unwrap();
+        assert!(
+            filename_field.is_array(),
+            "Conditional filename array must be preserved, got: {}",
+            filename_field
+        );
+
+        let arr = filename_field.as_array().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert!(arr[0].get("match").is_some(), "First entry must have 'match'");
+    }
+
+    #[test]
+    fn test_parse_contexts_array_without_default_gets_fallback() {
+        let contexts = json!([{
+            "name": "testctx",
+            "description": "Test context",
+            "filename": [
+                {"match": ".*\\.mp3", "pattern": "{context}-audio"}
+            ],
+            "fields": {
+                "type": {
+                    "instructions": "Determine type",
+                    "candidates": ["A"],
+                    "allow_new_candidates": false
+                }
+            }
+        }]);
+
+        let parsed = parse_contexts(&contexts).unwrap();
+        let filename_field = parsed[0].get("filename").unwrap();
+        // No default entry → should be replaced with fallback string
+        assert_eq!(filename_field.as_str().unwrap(), "{context}-{date}");
+    }
 }

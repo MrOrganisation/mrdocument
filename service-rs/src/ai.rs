@@ -201,7 +201,7 @@ pub fn sanitize(s: &str) -> String {
     result
 }
 
-fn resolve_filename_pattern(raw: &Value, source_filename: Option<&str>) -> String {
+pub fn resolve_filename_pattern(raw: &Value, source_filename: Option<&str>) -> String {
     match raw {
         Value::String(s) => s.clone(),
         Value::Array(arr) => {
@@ -1417,5 +1417,51 @@ mod tests {
 
         let config = AiError::Configuration("missing field".to_string());
         assert!(config.to_string().contains("Configuration error"));
+    }
+
+    #[test]
+    fn test_resolve_filename_pattern_conditional_array() {
+        // Simulate JSON from YAML conditional filename array
+        let raw = serde_json::json!([
+            {
+                "match": ".*\\.(mp3|m4a|mp4|mov|wav)",
+                "pattern": "{context}-{source_filename}-{date}"
+            },
+            {
+                "pattern": "{context}-{type}-{date}-{sender}"
+            }
+        ]);
+
+        // Audio file should match the first rule
+        let result = resolve_filename_pattern(&raw, Some("condpattern-audio.m4a"));
+        assert_eq!(result, "{context}-{source_filename}-{date}",
+            "Audio file should match the conditional regex");
+
+        // PDF should fall through to default
+        let result = resolve_filename_pattern(&raw, Some("document.pdf"));
+        assert_eq!(result, "{context}-{type}-{date}-{sender}");
+
+        // No filename should use default
+        let result = resolve_filename_pattern(&raw, None);
+        assert_eq!(result, "{context}-{type}-{date}-{sender}");
+    }
+
+    #[test]
+    fn test_resolve_filename_pattern_yaml_to_json_roundtrip() {
+        // Simulate the exact YAML→JSON conversion from get_context_for_api
+        let yaml_str = r#"
+filename:
+  - match: '.*\.(mp3|m4a|mp4|mov|wav)'
+    pattern: '{context}-{source_filename}-{date}'
+  - pattern: '{context}-{type}-{date}-{sender}'
+"#;
+        let yaml_val: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+        let json_str = serde_json::to_string(&yaml_val).unwrap();
+        let json_val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let filename_field = json_val.get("filename").unwrap();
+
+        let result = resolve_filename_pattern(filename_field, Some("test.m4a"));
+        assert_eq!(result, "{context}-{source_filename}-{date}",
+            "Audio file should match after YAML→JSON roundtrip. JSON: {}", json_str);
     }
 }

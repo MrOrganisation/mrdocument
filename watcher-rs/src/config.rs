@@ -2029,4 +2029,64 @@ mod tests {
         assert!(ctx.filename_rules[1].match_regex.is_none());
         assert_eq!(ctx.filename_pattern, "{context}-{date}"); // default
     }
+
+    #[test]
+    fn test_conditional_filename_yaml_to_json_for_api() {
+        // Simulate the exact YAML→JSON path used by get_context_for_api
+        let yaml_str = r#"
+name: testctx
+description: Test context
+
+filename:
+  - match: '.*\.(mp3|m4a|mp4|mov|wav)'
+    pattern: '{context}-{source_filename}-{date}'
+  - pattern: '{context}-{type}-{date}-{sender}'
+
+fields:
+  type:
+    instructions: "Bestimme den Dokumenttyp"
+    candidates:
+      - "Memo"
+    allow_new_candidates: false
+
+folders:
+  - "context"
+"#;
+        let data: serde_yaml::Value = serde_yaml::from_str(yaml_str).unwrap();
+
+        // This is the same conversion as get_context_for_api
+        let json_str = serde_json::to_string(&data).unwrap();
+        let json_val: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        // Verify filename field is a JSON array
+        let filename_field = json_val.get("filename").unwrap();
+        assert!(
+            filename_field.is_array(),
+            "filename should be array, got: {}",
+            filename_field
+        );
+
+        let arr = filename_field.as_array().unwrap();
+        assert_eq!(arr.len(), 2, "Should have 2 entries");
+
+        // First entry should have "match" and "pattern"
+        let entry0 = &arr[0];
+        let match_re = entry0.get("match").and_then(|v| v.as_str());
+        assert!(
+            match_re.is_some(),
+            "First entry should have 'match' key, got: {}",
+            entry0,
+        );
+        let match_re = match_re.unwrap();
+        assert_eq!(match_re, r".*\.(mp3|m4a|mp4|mov|wav)");
+
+        let pattern = entry0.get("pattern").and_then(|v| v.as_str()).unwrap();
+        assert_eq!(pattern, "{context}-{source_filename}-{date}");
+
+        // Verify the regex matches audio files
+        let re = regex::Regex::new(match_re).unwrap();
+        assert!(re.is_match("condpattern-audio.m4a"), "Should match .m4a");
+        assert!(re.is_match("test.mp3"), "Should match .mp3");
+        assert!(!re.is_match("document.pdf"), "Should NOT match .pdf");
+    }
 }

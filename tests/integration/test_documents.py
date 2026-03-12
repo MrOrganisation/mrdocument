@@ -986,7 +986,8 @@ class TestConditionalFilenameAiDisagrees:
         )
 
         # Conditional pattern for audio includes {source_filename}
-        assert "condpattern-audio" in stem, (
-            f"Filename should contain source_filename 'condpattern-audio' "
-            f"(conditional audio pattern), got: {result.name}"
+        # Hyphens are sanitized to underscores by the service
+        assert "condpattern_audio" in stem, (
+            f"Filename should contain source_filename 'condpattern_audio' "
+            f"(conditional audio pattern, hyphens sanitized), got: {result.name}"
         )
