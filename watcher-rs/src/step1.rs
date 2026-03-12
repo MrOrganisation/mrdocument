@@ -14,7 +14,7 @@ use anyhow::Result;
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use sha2::{Digest, Sha256};
 use tokio::sync::mpsc;
-use tracing::{error, info};
+use tracing::{error, info, trace};
 use uuid::Uuid;
 
 use crate::models::{ChangeItem, EventType, Record};
@@ -318,7 +318,7 @@ impl FilesystemDetector {
                                 continue;
                             }
                             let rel_str = rel.to_string_lossy().to_string();
-                            eprintln!("  inotify: {:?} {}", event.kind, rel_str);
+                            trace!("inotify: {:?} {}", event.kind, rel_str);
                             let mut set = changed.lock().unwrap();
                             set.insert(rel_str);
                             any_relevant = true;
@@ -668,17 +668,14 @@ impl FilesystemDetector {
             return Vec::new();
         }
 
-        let mut sorted_paths: Vec<&String> = changed_paths.iter().collect();
-        sorted_paths.sort();
-        info!(
-            "detect_incremental: {} inotify events:\n{}",
-            changed_paths.len(),
-            sorted_paths
-                .iter()
-                .map(|p| format!("  {}", p))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        info!("detect_incremental: {} inotify events", changed_paths.len());
+        if tracing::enabled!(tracing::Level::TRACE) {
+            let mut sorted_paths: Vec<&String> = changed_paths.iter().collect();
+            sorted_paths.sort();
+            for p in &sorted_paths {
+                trace!("  inotify path: {}", p);
+            }
+        }
 
         // Build O(1) lookup indexes from snapshot.
         let index = Self::build_snapshot_index(db_snapshot);
