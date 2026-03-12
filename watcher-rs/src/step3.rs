@@ -188,7 +188,6 @@ pub struct Processor {
     pub stt_url: Option<String>,
     pub timeout: Duration,
     pub max_retries: u32,
-    pub retry_delay: f64,
     pub contexts: Option<Vec<serde_json::Value>>,
     pub context_manager: Option<SorterContextManager>,
     client: reqwest::Client,
@@ -217,7 +216,6 @@ impl Processor {
             stt_url,
             timeout: Duration::from_secs_f64(timeout),
             max_retries: 3,
-            retry_delay: 2.0,
             contexts,
             context_manager,
             client,
@@ -414,7 +412,7 @@ impl Processor {
             Ok(form)
         };
 
-        self.call_with_retry(&url, make_form, self.max_retries, "process", Some(&label_filename), Some(self.timeout))
+        self.call_with_retry(&url, make_form, self.max_retries, "process", Some(&label_filename), Some(self.timeout), true)
             .await
     }
 
@@ -520,7 +518,7 @@ impl Processor {
             let url = format!("{}/classify_audio", self.service_url);
 
             let result = self
-                .call_json_with_retry(&url, &request_body, 2, "classify_audio", Some(filename), Some(Duration::from_secs(120)))
+                .call_json_with_retry(&url, &request_body, 2, "classify_audio", Some(filename), Some(Duration::from_secs(120)), false)
                 .await?;
 
             match result {
@@ -612,7 +610,7 @@ impl Processor {
 
         let timeout = Duration::from_secs(1800);
         let result = self
-            .call_with_retry(&url, make_form, self.max_retries, "stt_transcribe", Some(filename), Some(timeout))
+            .call_with_retry(&url, make_form, self.max_retries, "stt_transcribe", Some(filename), Some(timeout), true)
             .await?;
 
         Ok(result.and_then(|r| r.get("transcript").cloned()))
@@ -649,7 +647,7 @@ impl Processor {
 
             let url = format!("{}/classify_transcript", self.service_url);
             let ct_result = self
-                .call_json_with_retry(&url, &request_body, 2, "classify_transcript", Some(filename), Some(Duration::from_secs(300)))
+                .call_json_with_retry(&url, &request_body, 2, "classify_transcript", Some(filename), Some(Duration::from_secs(300)), false)
                 .await?;
 
             let ct_result = match ct_result {
@@ -781,7 +779,7 @@ impl Processor {
 
         let url = format!("{}/process_transcript", self.service_url);
         let timeout = Duration::from_secs(1800);
-        self.call_json_with_retry(&url, &request_body, self.max_retries, "process_transcript", Some(filename), Some(timeout))
+        self.call_json_with_retry(&url, &request_body, self.max_retries, "process_transcript", Some(filename), Some(timeout), true)
             .await
     }
 
@@ -793,28 +791,48 @@ impl Processor {
     ///
     /// Retries on 5xx and 429; fails immediately on other 4xx client errors.
     /// Uses exponential backoff between retries (capped at 30s).
+    /// Compute the delay for a given attempt number.
+    ///
+    /// Phase 1 (attempts 0..quick_retries): exponential backoff 2s, 4s, 8s.
+    /// Phase 2 (extended): 10 minutes between each attempt.
+    fn retry_delay_for(attempt: u32, quick_retries: u32) -> f64 {
+        if attempt < quick_retries {
+            // Phase 1: exponential backoff starting at 2s
+            2.0_f64 * 2.0_f64.powi(attempt as i32)
+        } else {
+            // Phase 2: fixed 10-minute interval
+            600.0
+        }
+    }
+
+    /// Execute a multipart POST with two-phase retry logic.
+    ///
+    /// Phase 1: 3 quick retries with exponential backoff (2s, 4s, 8s).
+    /// Phase 2 (if `extended`): retry every 10 minutes for up to 24 hours.
+    /// 4xx (except 429) = fail immediately (non-retryable input error).
+    /// 5xx / 429 / connection error = retry.
     async fn call_with_retry<MF>(
         &self,
         url: &str,
         make_form: MF,
-        max_retries: u32,
+        quick_retries: u32,
         label: &str,
         source: Option<&str>,
         timeout: Option<Duration>,
+        extended: bool,
     ) -> Result<Option<serde_json::Value>>
     where
         MF: Fn() -> Result<multipart::Form>,
     {
-        let mut delay = self.retry_delay;
-        let max_delay: f64 = 30.0;
         let tag = match source {
             Some(s) => format!("{} [{}]", label, s),
             None => label.to_string(),
         };
-
         let request_timeout = timeout.unwrap_or(self.timeout);
+        let max_long_retries: u32 = if extended { 144 } else { 0 }; // 24h at 10min intervals
+        let total_retries = quick_retries + max_long_retries;
 
-        for attempt in 0..=max_retries {
+        for attempt in 0..=total_retries {
             let form = make_form()?;
             let result = self
                 .client
@@ -842,7 +860,7 @@ impl Processor {
                         "{} error (attempt {}/{}): HTTP {}",
                         tag,
                         attempt + 1,
-                        max_retries + 1,
+                        total_retries + 1,
                         status
                     );
                 }
@@ -851,44 +869,50 @@ impl Processor {
                         "{} connection error (attempt {}/{}): {}",
                         tag,
                         attempt + 1,
-                        max_retries + 1,
+                        total_retries + 1,
                         e
                     );
                 }
             }
 
-            if attempt < max_retries {
+            if attempt < total_retries {
+                let delay = Self::retry_delay_for(attempt, quick_retries);
+                if attempt == quick_retries && extended {
+                    info!(
+                        "{} quick retries exhausted, switching to extended retry (every 10 min)",
+                        tag
+                    );
+                }
                 tokio::time::sleep(Duration::from_secs_f64(delay)).await;
-                delay = (delay * 2.0).min(max_delay);
             }
         }
 
+        error!("{} all retry attempts exhausted", tag);
         Ok(None)
     }
 
-    /// Execute a JSON POST with retry logic.
+    /// Execute a JSON POST with two-phase retry logic.
     ///
-    /// Retries on 5xx and 429; fails immediately on other 4xx client errors.
-    /// Uses exponential backoff between retries (capped at 30s).
+    /// Same retry semantics as [`call_with_retry`].
     async fn call_json_with_retry(
         &self,
         url: &str,
         body: &serde_json::Value,
-        max_retries: u32,
+        quick_retries: u32,
         label: &str,
         source: Option<&str>,
         timeout: Option<Duration>,
+        extended: bool,
     ) -> Result<Option<serde_json::Value>> {
-        let mut delay = self.retry_delay;
-        let max_delay: f64 = 30.0;
         let tag = match source {
             Some(s) => format!("{} [{}]", label, s),
             None => label.to_string(),
         };
-
         let request_timeout = timeout.unwrap_or(self.timeout);
+        let max_long_retries: u32 = if extended { 144 } else { 0 };
+        let total_retries = quick_retries + max_long_retries;
 
-        for attempt in 0..=max_retries {
+        for attempt in 0..=total_retries {
             let result = self
                 .client
                 .post(url)
@@ -915,7 +939,7 @@ impl Processor {
                         "{} error (attempt {}/{}): HTTP {}",
                         tag,
                         attempt + 1,
-                        max_retries + 1,
+                        total_retries + 1,
                         status
                     );
                 }
@@ -924,18 +948,25 @@ impl Processor {
                         "{} connection error (attempt {}/{}): {}",
                         tag,
                         attempt + 1,
-                        max_retries + 1,
+                        total_retries + 1,
                         e
                     );
                 }
             }
 
-            if attempt < max_retries {
+            if attempt < total_retries {
+                let delay = Self::retry_delay_for(attempt, quick_retries);
+                if attempt == quick_retries && extended {
+                    info!(
+                        "{} quick retries exhausted, switching to extended retry (every 10 min)",
+                        tag
+                    );
+                }
                 tokio::time::sleep(Duration::from_secs_f64(delay)).await;
-                delay = (delay * 2.0).min(max_delay);
             }
         }
 
+        error!("{} all retry attempts exhausted", tag);
         Ok(None)
     }
 }
@@ -1092,5 +1123,34 @@ diarization_speaker_count: 5
                 ext
             );
         }
+    }
+
+    #[test]
+    fn test_retry_delay_phase1_exponential() {
+        // Phase 1: exponential backoff 2, 4, 8
+        assert!((Processor::retry_delay_for(0, 3) - 2.0).abs() < f64::EPSILON);
+        assert!((Processor::retry_delay_for(1, 3) - 4.0).abs() < f64::EPSILON);
+        assert!((Processor::retry_delay_for(2, 3) - 8.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_retry_delay_phase2_fixed() {
+        // Phase 2: fixed 600s (10 min) interval
+        assert!((Processor::retry_delay_for(3, 3) - 600.0).abs() < f64::EPSILON);
+        assert!((Processor::retry_delay_for(4, 3) - 600.0).abs() < f64::EPSILON);
+        assert!((Processor::retry_delay_for(100, 3) - 600.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_retry_delay_custom_quick_retries() {
+        // With 1 quick retry, phase 2 starts at attempt 1
+        assert!((Processor::retry_delay_for(0, 1) - 2.0).abs() < f64::EPSILON);
+        assert!((Processor::retry_delay_for(1, 1) - 600.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_retry_delay_zero_quick_retries() {
+        // With 0 quick retries, all attempts are phase 2
+        assert!((Processor::retry_delay_for(0, 0) - 600.0).abs() < f64::EPSILON);
     }
 }

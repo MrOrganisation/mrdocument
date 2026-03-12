@@ -138,7 +138,11 @@ class ElevenLabsBackend(Backend):
                     error_detail = response.json().get("detail", {})
                 except Exception:
                     error_detail = response.text[:200]
-                logger.error(f"[ElevenLabs] API error: {e}. Detail: {error_detail}")
+                status_code = response.status_code
+                logger.error(f"[ElevenLabs] API error (HTTP {status_code}): {e}. Detail: {error_detail}")
+                # 4xx (except 429) = input problem, not retryable
+                if 400 <= status_code < 500 and status_code != 429:
+                    raise ValueError(f"ElevenLabs rejected the input (HTTP {status_code}): {error_detail}")
                 raise RuntimeError(f"ElevenLabs API error: {e}. Detail: {error_detail}")
             except requests.exceptions.RequestException as e:
                 logger.error(f"[ElevenLabs] Request failed: {e}")

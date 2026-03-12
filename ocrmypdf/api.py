@@ -238,17 +238,21 @@ def ocr_pdf():
             
             if 'DigitalSignatureError' in stderr:
                 error_msg = 'PDF has a digital signature - the --invalidate-digital-signatures flag may not be working'
+                status_code = 422
             elif 'The generated PDF is INVALID' in stderr:
                 error_msg = 'OCR produced invalid output - input PDF may be corrupted'
+                status_code = 422
             elif 'EncryptedPdfError' in stderr:
                 error_msg = 'PDF is encrypted and cannot be processed'
+                status_code = 422
             else:
                 error_msg = 'OCR processing failed'
-            
+                status_code = 500
+
             return jsonify({
                 'error': error_msg,
                 'details': stderr
-            }), 500
+            }), status_code
             
     except subprocess.TimeoutExpired:
         app.logger.error("OCR processing timeout")

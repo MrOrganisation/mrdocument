@@ -33,9 +33,16 @@ def mock_ocr():
     file_bytes = uploaded.read()
     filename = uploaded.filename or "document.pdf"
 
-    # Simulate OCR failure on empty/corrupt documents
+    # Simulate 422 for empty/corrupt documents (non-retryable input error)
     if len(file_bytes) == 0:
-        return jsonify({"error": "OCR failed: empty document"}), 500
+        return jsonify({"error": "OCR failed: empty document"}), 422
+
+    # Simulate 422 for encrypted PDFs (content starts with marker)
+    if file_bytes[:10] == b"ENCRYPTED:":
+        return jsonify({
+            "error": "PDF is encrypted and cannot be processed",
+            "details": "EncryptedPdfError",
+        }), 422
 
     pdf_b64 = base64.b64encode(file_bytes).decode("utf-8")
     return jsonify({

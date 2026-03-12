@@ -367,6 +367,10 @@ async fn process_document(
     // Step 1: OCR
     let ocr_result = match state.ocr_client.process_pdf(&pdf_bytes, &fname, &language).await {
         Ok(r) => r,
+        Err(OcrError::UnprocessableInput(msg)) => {
+            error!("OCR rejected input for {}: {}", fname, msg);
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("OCR rejected input: {}", msg)})));
+        }
         Err(OcrError::Failed(msg)) => {
             error!("OCR failed for {}: {}", fname, msg);
             return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("OCR failed: {}", msg)})));
@@ -394,6 +398,9 @@ async fn process_document(
         Ok(r) => r,
         Err(AiError::Configuration(msg)) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Configuration error: {}", msg)})));
+        }
+        Err(AiError::UnprocessableInput(msg)) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
         }
         Err(e) => {
             error!("AI processing failed for {}: {}", fname, e);
@@ -501,6 +508,9 @@ async fn process_text_file(
         Err(AiError::Configuration(msg)) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Configuration error: {}", msg)})));
         }
+        Err(AiError::UnprocessableInput(msg)) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
+        }
         Err(e) => {
             return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("AI processing failed: {}", e)})));
         }
@@ -566,6 +576,9 @@ async fn process_docx_file(
         Ok(r) => r,
         Err(AiError::Configuration(msg)) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Configuration error: {}", msg)})));
+        }
+        Err(AiError::UnprocessableInput(msg)) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
         }
         Err(e) => {
             return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("AI processing failed: {}", e)})));
@@ -704,6 +717,9 @@ async fn process_transcript_handler(
             Err(AiError::Configuration(msg)) => {
                 return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Configuration error: {}", msg)})));
             }
+            Err(AiError::UnprocessableInput(msg)) => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
+            }
             Err(e) => {
                 return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("AI processing failed: {}", e)})));
             }
@@ -778,6 +794,9 @@ async fn classify_audio_handler(
         Err(AiError::Configuration(msg)) => {
             return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Configuration error: {}", msg)})));
         }
+        Err(AiError::UnprocessableInput(msg)) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
+        }
         Err(e) => {
             return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("AI classification failed: {}", e)})));
         }
@@ -832,6 +851,9 @@ async fn classify_transcript_handler(
     } else {
         match state.ai_client.determine_context(&full_text, &contexts, Some(&filename), None, true).await {
             Ok(c) => c,
+            Err(AiError::UnprocessableInput(msg)) => {
+                return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
+            }
             Err(e) => {
                 return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("AI classification failed: {}", e)})));
             }
@@ -863,6 +885,9 @@ async fn classify_transcript_handler(
         None,
     ).await {
         Ok(m) => m,
+        Err(AiError::UnprocessableInput(msg)) => {
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Unprocessable input: {}", msg)})));
+        }
         Err(e) => {
             return (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("AI classification failed: {}", e)})));
         }

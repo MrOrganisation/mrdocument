@@ -555,7 +555,8 @@ class TestErrorHandlingAndRecovery:
     """Service returns error (empty PDF) -> source moved to error/.
     Then: valid file resubmitted -> processed successfully.
 
-    Uses mock_ocr's empty-file error: 0-byte PDF triggers HTTP 500.
+    Uses mock_ocr's empty-file error: 0-byte PDF triggers HTTP 422
+    (non-retryable input error).
     """
 
     def test_error_and_recovery(
@@ -616,6 +617,44 @@ class TestErrorHandlingAndRecovery:
             expected_context="arbeit",
             expected_date="2025-12-08",
         )
+
+
+class TestUnprocessableInputError:
+    """Non-retryable error (HTTP 422) moves file to error/ immediately.
+
+    Uses mock_ocr's encrypted-PDF detection: content starting with
+    ``b"ENCRYPTED:"`` triggers HTTP 422 (Unprocessable Entity).
+    The watcher should NOT retry and move the file to error/ promptly.
+    """
+
+    def test_encrypted_pdf_to_error(
+        self, test_config: TestConfig, clean_working_dirs,
+    ):
+        file_stem = "encrypted_test_doc"
+
+        # Submit a "encrypted" PDF (triggers 422 in mock_ocr)
+        dest = test_config.incoming_dir / f"{file_stem}.pdf"
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_suffix(".tmp")
+        tmp.write_bytes(b"ENCRYPTED:" + b"fake encrypted content")
+        tmp.rename(dest)
+
+        # Should end up in error/ quickly (no extended retry).
+        # Use a shorter timeout than max_timeout to verify no retry delays.
+        error_timeout = min(test_config.max_timeout, 60.0)
+        error_file = poll_for_file_recursive_in(
+            test_config.error_dir,
+            f"*{file_stem}*",
+            test_config.poll_interval,
+            error_timeout,
+        )
+        assert error_file is not None, (
+            f"Encrypted PDF not moved to error/ within {error_timeout}s "
+            "(422 should be non-retryable)"
+        )
+
+        # Original should be gone from incoming/
+        assert not dest.exists(), "Source should be removed from incoming/"
 
 
 # ===================================================================

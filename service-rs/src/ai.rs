@@ -237,6 +237,8 @@ fn resolve_filename_pattern(raw: &Value, source_filename: Option<&str>) -> Strin
 pub enum AiError {
     #[error("AI processing failed: {0}")]
     Failed(String),
+    #[error("Unprocessable input: {0}")]
+    UnprocessableInput(String),
     #[error("Configuration error: {0}")]
     Configuration(String),
     #[error("HTTP error: {0}")]
@@ -819,7 +821,7 @@ impl AiClient {
                     }
 
                     if is_last {
-                        return Err(AiError::Failed(
+                        return Err(AiError::UnprocessableInput(
                             "All models failed to determine context".to_string(),
                         ));
                     }
@@ -827,7 +829,7 @@ impl AiClient {
                         "Model {} returned null context, trying next",
                         model.name
                     );
-                    last_error = Some(AiError::Failed(format!(
+                    last_error = Some(AiError::UnprocessableInput(format!(
                         "Model {} returned null context",
                         model.name
                     )));
@@ -1403,5 +1405,17 @@ mod tests {
             None,
         );
         assert_eq!(result, "work-2025-01-15.pdf");
+    }
+
+    #[test]
+    fn test_ai_error_variants_display() {
+        let failed = AiError::Failed("API error 500".to_string());
+        assert!(failed.to_string().contains("AI processing failed"));
+
+        let unprocessable = AiError::UnprocessableInput("cannot classify".to_string());
+        assert!(unprocessable.to_string().contains("Unprocessable input"));
+
+        let config = AiError::Configuration("missing field".to_string());
+        assert!(config.to_string().contains("Configuration error"));
     }
 }

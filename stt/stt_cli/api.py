@@ -125,14 +125,14 @@ async def transcribe(
                 original_filename=file.filename,
             )
         except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+            raise HTTPException(status_code=422, detail=str(e))
         except Exception as e:
             logger.exception("Transcription failed")
             raise HTTPException(status_code=500, detail=f"Transcription failed: {e}")
 
         transcript = job.result
         if not transcript or not transcript.segments:
-            raise HTTPException(status_code=500, detail="No transcript segments returned")
+            raise HTTPException(status_code=422, detail="No transcript segments returned")
 
         # Aggregate by speaker if diarization was used
         has_speakers = any(seg.speaker_tag is not None for seg in transcript.segments)

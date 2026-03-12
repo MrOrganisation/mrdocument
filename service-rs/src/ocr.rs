@@ -15,6 +15,8 @@ pub struct OcrResult {
 pub enum OcrError {
     #[error("OCR failed: {0}")]
     Failed(String),
+    #[error("Unprocessable input: {0}")]
+    UnprocessableInput(String),
     #[error("OCR request error: {0}")]
     Request(#[from] reqwest::Error),
 }
@@ -78,11 +80,12 @@ impl OcrClient {
                         .get("details")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    error!("OCR service returned error: {} - {}", error_msg, details);
-                    return Err(OcrError::Failed(format!(
-                        "OCR failed: {}. {}",
-                        error_msg, details
-                    )));
+                    error!("OCR service returned error (HTTP {}): {} - {}", status, error_msg, details);
+                    let msg = format!("OCR failed: {}. {}", error_msg, details);
+                    if status == reqwest::StatusCode::UNPROCESSABLE_ENTITY {
+                        return Err(OcrError::UnprocessableInput(msg));
+                    }
+                    return Err(OcrError::Failed(msg));
                 }
                 Err(_) => {
                     return Err(OcrError::Failed(format!(
