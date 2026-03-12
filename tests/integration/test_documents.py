@@ -932,3 +932,61 @@ class TestSortedAiDisagrees:
             expected_context=folder_ctx,
             expected_date=date,
         )
+
+
+class TestConditionalFilenameAiDisagrees:
+    """Test conditional filename pattern with context locking.
+
+    An audio file is placed into sorted/testctx/ whose context.yaml uses
+    a conditional ``filename`` array (match regex for audio extensions).
+    The mock AI classifies the content as context "arbeit", but the system
+    must keep the locked context "testctx" and use the audio-specific
+    conditional pattern which includes ``{source_filename}``.
+    """
+
+    def test_conditional_pattern_audio_context_locked(
+        self, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        ctx_dir = test_config.sorted_dir / "testctx"
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        date = "2025-02-20"
+
+        # Snapshot existing files
+        existing = set(ctx_dir.rglob(f"*{date}*.txt"))
+
+        # Place audio file into sorted/testctx/
+        src = generated_dir / "condpattern-audio.m4a"
+        assert src.exists(), f"Source audio missing: {src}"
+        dest = ctx_dir / "condpattern-audio.m4a"
+        atomic_copy(src, dest)
+
+        # Poll sorted/testctx/ for the renamed output file
+        result = poll_for_file_recursive(
+            ctx_dir,
+            f"*{date}*.txt",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing,
+        )
+        assert result is not None, (
+            f"Renamed file not found in sorted/testctx/ "
+            f"within {test_config.max_timeout}s (pattern: *{date}*.txt)"
+        )
+
+        # Verify the output uses the FOLDER context, not the AI context
+        stem = result.stem.lower()
+        assert "testctx" in stem, (
+            f"Filename should use locked context 'testctx', got: {result.name}"
+        )
+        assert "arbeit" not in stem, (
+            f"Filename must NOT use AI context 'arbeit', got: {result.name}"
+        )
+        assert date in stem, (
+            f"Filename should contain date '{date}', got: {result.name}"
+        )
+
+        # Conditional pattern for audio includes {source_filename}
+        assert "condpattern-audio" in stem, (
+            f"Filename should contain source_filename 'condpattern-audio' "
+            f"(conditional audio pattern), got: {result.name}"
+        )

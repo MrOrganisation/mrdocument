@@ -1,0 +1,24 @@
+name: testctx
+description: Test context for conditional filename patterns
+
+filename:
+  - match: '.*\.(mp3|m4a|mp4|mov|wav)'
+    pattern: '{context}-{source_filename}-{date}'
+  - pattern: '{context}-{type}-{date}-{sender}'
+
+fields:
+  type:
+    instructions: "Bestimme den Dokumenttyp anhand des Inhalts."
+    candidates:
+      - "Memo"
+      - "Notiz"
+    allow_new_candidates: false
+
+  sender:
+    instructions: "Bestimme den Absender."
+    candidates:
+      - "TestSender"
+    allow_new_candidates: true
+
+folders:
+  - "context"

@@ -55,6 +55,11 @@ AUDIO_TRANSCRIPTS = {
         "Hautuntersuchung vom achtzehnten Juni liegen vor. Es handelt sich "
         "um ein harmloses Ekzem. Ich schicke dir den Befund per Post."
     ),
+    "condpattern-audio": (
+        "Guten Morgen, hier ist eine kurze Testaufnahme. "
+        "Wir testen das bedingte Dateinamensmuster mit einem "
+        "Kontextwechsel durch die KI-Klassifizierung."
+    ),
     "sorted-wrongctx-audio": (
         "Guten Tag, hier ist Martin Schulze von der Schulze GmbH. "
         "Ich moechte kurz die Ergebnisse unserer letzten Besprechung "

@@ -117,6 +117,18 @@ AUDIO_FILES = {
             "in der Praxis an. Schoene Gruesse."
         ),
     },
+    "condpattern-audio": {
+        "context": "testctx",
+        "date": "2025-02-20",
+        "intro_position": None,
+        "intro_text": None,
+        "format": "m4a",
+        "body_text": (
+            "Guten Morgen, hier ist eine kurze Testaufnahme. "
+            "Wir testen das bedingte Dateinamensmuster mit einem "
+            "Kontextwechsel durch die KI-Klassifizierung."
+        ),
+    },
     "sorted-wrongctx-audio": {
         "context": "arbeit",
         "date": "2025-01-20",

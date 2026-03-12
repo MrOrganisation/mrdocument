@@ -3223,4 +3223,133 @@ mod tests {
         assert_eq!(meta.get("context").unwrap().as_str(), Some("work"));
         assert_eq!(meta.get("date").unwrap().as_str(), Some("2025-01-01"));
     }
+
+    /// Audio file placed in sorted/{context}/{field}/ with conditional filename
+    /// pattern: AI returns a different context and field, but the record keeps
+    /// the folder-derived context and stays in its directory.
+    #[test]
+    fn test_sorted_audio_context_locked_ai_disagrees() {
+        // 1. Detect the audio file in sorted/privat/Arztbrief/
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/privat/Arztbrief/audio-memo.m4a",
+            Some("audio_hash_1"),
+            Some(50000),
+        );
+
+        let (_modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+
+        assert_eq!(created.len(), 1);
+        let record = &created[0];
+        // Context is locked from the directory path
+        assert_eq!(record.context.as_deref(), Some("privat"));
+        assert_eq!(record.original_filename, "audio-memo.m4a");
+        assert_eq!(record.state, State::IsNew);
+
+        // 2. Reconcile: IsNew → NeedsProcessing (assigns output_filename)
+        let mut all_records = created;
+        let result = reconcile(&mut all_records[0], None, None, None);
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+        let output_uuid = r.output_filename.clone().unwrap();
+
+        // 3. Simulate processing completion: .output file arrives with
+        //    sidecar metadata where AI disagrees on both context and type
+        let sidecar_fn = |path: &str| -> serde_json::Value {
+            if path.contains(&output_uuid) {
+                json!({
+                    "context": "arbeit",
+                    "metadata": {
+                        "context": "arbeit",
+                        "type": "Rechnung",
+                        "sender": "Schulze GmbH",
+                        "date": "2025-08-15"
+                    },
+                    "assigned_filename": "arbeit-rechnung-2025-08-15-schulze.txt"
+                })
+            } else {
+                json!({})
+            }
+        };
+
+        let output_change = _make_change(
+            EventType::Addition,
+            &format!(".output/{}", output_uuid),
+            Some("output_hash_1"),
+            Some(10000),
+        );
+        let (modified_ids, _) = preprocess(
+            &[output_change],
+            &mut all_records,
+            &mut Vec::new(),
+            sidecar_fn,
+        );
+
+        assert!(!modified_ids.is_empty());
+        let r = &all_records[0];
+
+        // Context stays locked to "privat" (from sorted/ directory),
+        // NOT overridden by sidecar's "arbeit"
+        assert_eq!(
+            r.context.as_deref(),
+            Some("privat"),
+            "Context must remain locked to folder, not AI's classification"
+        );
+
+        // Metadata fields from AI are still adopted (type, sender, date)
+        let meta = r.metadata.as_ref().unwrap();
+        assert_eq!(meta.get("type").unwrap().as_str(), Some("Rechnung"));
+        assert_eq!(meta.get("sender").unwrap().as_str(), Some("Schulze GmbH"));
+
+        // assigned_filename comes from AI (service used its pattern)
+        assert!(r.assigned_filename.is_some());
+        assert!(r.output_filename.is_none()); // cleared after ingestion
+
+        // 4. Reconcile: .output → sorted/ target path using locked context
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "privat".to_string(),
+            vec!["context".to_string(), "type".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let result = reconcile(
+            &mut all_records[0],
+            None,
+            Some(&context_folders),
+            None,
+        );
+        let r = result.unwrap();
+
+        // Context still locked to folder-derived value
+        assert_eq!(
+            r.context.as_deref(),
+            Some("privat"),
+            "Context must stay locked after reconcile"
+        );
+
+        // assigned_filename preserved from sidecar (service resolves it)
+        assert_eq!(
+            r.assigned_filename.as_deref(),
+            Some("arbeit-rechnung-2025-08-15-schulze.txt"),
+            "assigned_filename from sidecar is used as-is in .output path"
+        );
+
+        // Target path uses locked context, NOT the AI-classified context
+        let target = r.target_path.as_deref().unwrap();
+        assert!(
+            target.starts_with("sorted/privat/"),
+            "Target path should be under sorted/privat/ (locked context), got: {}",
+            target,
+        );
+        assert!(
+            !target.starts_with("sorted/arbeit/"),
+            "Target path must NOT use AI-classified context 'arbeit', got: {}",
+            target,
+        );
+    }
 }

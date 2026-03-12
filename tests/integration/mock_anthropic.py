@@ -230,6 +230,13 @@ DOCUMENT_METADATA = {
         "sender": "Dr. Braun",
         "date": "2025-08-03",
     },
+    # Conditional filename pattern test (testctx, AI disagrees)
+    "condpattern-audio": {
+        "context": "arbeit",
+        "type": "Rechnung",
+        "sender": "Schulze GmbH",
+        "date": "2025-02-20",
+    },
     # Video files (mov, mp4)
     "videocall": {
         "context": "arbeit",
