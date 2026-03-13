@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: privat_kontoauszug_allianz.txt
+    path_of_generated_file: generated/privat_kontoauszug_allianz.txt
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/privat_kontoauszug_allianz.txt
+    expected:
+      - 'archive/privat_kontoauszug_allianz\.txt'
+      - 'sorted/arbeit/.*/arbeit-.*2025-02-18.*\.txt'

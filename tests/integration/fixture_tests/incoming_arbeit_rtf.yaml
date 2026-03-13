@@ -1,0 +1,20 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_rechnung_keller.rtf
+    path_of_generated_file: generated/arbeit_rechnung_keller.rtf
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/arbeit_rechnung_keller.rtf
+    expected:
+      - 'archive/arbeit_rechnung_keller\.rtf'
+      - 'processed/arbeit-.*2025-05-12.*\.pdf'
+  # Step 2: move processed to reviewed → sorted
+  - input:
+      - move: 'processed/arbeit-.*2025-05-12.*\.pdf'
+        to: 'reviewed/'
+    expected:
+      - 'archive/arbeit_rechnung_keller\.rtf'
+      - 'sorted/arbeit/Keller und Partner/arbeit-.*2025-05-12.*\.pdf'

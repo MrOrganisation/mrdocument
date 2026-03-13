@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: stray_archive_doc.txt
+    content: "Unknown document content. Unique: yaml-fixture-test"
+timeout: 300s
+steps:
+  - input:
+      - incoming/stray_archive_doc.txt
+    expected:
+      - 'archive/stray_archive_doc\.txt'
+      - 'processed/arbeit-.*2025-12-30.*\.txt'

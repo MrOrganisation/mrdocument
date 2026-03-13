@@ -1,0 +1,20 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_vertrag_fischer.txt
+    path_of_generated_file: generated/arbeit_vertrag_fischer.txt
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/arbeit_vertrag_fischer.txt
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.txt'
+      - 'processed/arbeit-.*2025-06-01.*\.txt'
+  # Step 2: move processed to reviewed → sorted
+  - input:
+      - move: 'processed/arbeit-.*2025-06-01.*\.txt'
+        to: 'reviewed/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.txt'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-06-01.*\.txt'

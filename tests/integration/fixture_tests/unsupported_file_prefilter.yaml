@@ -1,0 +1,21 @@
+files:
+  - filename: Montserrat-Bold.ttf
+    content: "unsupported file content"
+  - filename: BentonSans-Book.otf
+    content: "unsupported file content"
+  - filename: budget.numbers
+    content: "unsupported file content"
+  - filename: thesis.tex
+    content: "unsupported file content"
+timeout: 60s
+steps:
+  - input:
+      - incoming/Montserrat-Bold.ttf
+      - incoming/BentonSans-Book.otf
+      - incoming/budget.numbers
+      - incoming/thesis.tex
+    expected:
+      - 'error/.*Montserrat-Bold.*'
+      - 'error/.*BentonSans-Book.*'
+      - 'error/.*budget.*'
+      - 'error/.*thesis.*'

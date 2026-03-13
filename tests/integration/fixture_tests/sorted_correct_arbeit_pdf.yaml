@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_angebot_fischer.pdf
+    path_of_generated_file: generated/arbeit_angebot_fischer.pdf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/arbeit_angebot_fischer.pdf
+    expected:
+      - 'archive/arbeit_angebot_fischer\.pdf'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-08-05.*\.pdf'

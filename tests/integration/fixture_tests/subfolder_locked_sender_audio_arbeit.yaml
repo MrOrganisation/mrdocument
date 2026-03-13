@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: subfolder-locked-audio.m4a
+    path_of_generated_file: generated/subfolder-locked-audio.m4a
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/Fischer AG/subfolder-locked-audio.m4a
+    expected:
+      - 'archive/subfolder-locked-audio\.m4a'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-11-05.*\.txt'

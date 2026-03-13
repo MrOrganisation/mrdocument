@@ -7,6 +7,11 @@ handling/recovery, and related lifecycle behaviors.
 Each test creates inline .txt files with unique content and uses mock metadata
 entries keyed by filename stem. All (file_stem, format) pairs are unique
 across the entire integration test suite.
+
+NOTE: Many tests have been migrated to YAML fixtures in ``fixture_tests/``.
+The following test classes remain as Python because they require DB queries,
+watcher restarts, symlink assertions, content verification, or other logic
+not expressible in the YAML fixture format.
 """
 
 import hashlib
@@ -29,7 +34,6 @@ from conftest import (
     poll_until_symlink_gone,
     restart_watcher,
     verify_filename_components,
-    watcher_logs,
     write_test_file,
 )
 
@@ -97,65 +101,6 @@ def _process_to_sorted(
 # ===================================================================
 
 
-class TestDuplicateIncoming:
-    """File added to incoming/ with same content as already-processed file
-    should be moved to duplicates/.
-    """
-
-    def test_duplicate_incoming_moved_to_duplicates(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        file_stem = "dup_incoming_doc"
-        context = "arbeit"
-        date = "2025-12-01"
-
-        # Step 1: Process the file through incoming → processed
-        content = f"Test document {file_stem}. Unique: {uuid.uuid4().hex}"
-        src_path = test_config.incoming_dir / f"{file_stem}.txt"
-        write_test_file(src_path, content)
-
-        pattern = f"{context}-*{date}*.txt"
-        processed = poll_for_file(
-            test_config.processed_dir,
-            pattern,
-            test_config.poll_interval,
-            test_config.max_timeout,
-            exclude_names={f"{file_stem}.txt"},
-        )
-        assert processed is not None, (
-            f"Initial file not processed within {test_config.max_timeout}s"
-        )
-
-        # Wait for the watcher to process the move from incoming/ to archive/
-        # (settle inotify events before writing the duplicate)
-        archive_file = poll_for_file(
-            test_config.archive_dir,
-            f"*{file_stem}*",
-            test_config.poll_interval,
-            30,
-        )
-        assert archive_file is not None, "File not archived"
-        time.sleep(2)  # let watcher process pending inotify events
-
-        # Step 2: Re-add the exact same content to incoming/
-        # (same source_hash → duplicate detection)
-        write_test_file(
-            test_config.incoming_dir / f"{file_stem}.txt",
-            content,
-        )
-
-        # Step 3: Poll for the duplicate to appear in duplicates/
-        dup_file = poll_for_file_recursive_in(
-            test_config.duplicates_dir,
-            f"*{file_stem}*",
-            test_config.poll_interval,
-            test_config.max_timeout,
-        )
-        assert dup_file is not None, (
-            f"Duplicate not found in duplicates/ within {test_config.max_timeout}s"
-        )
-
-
 class TestDuplicateSorted:
     """Original source file added to sorted/ after already being processed
     should be moved to duplicates/.
@@ -221,105 +166,8 @@ class TestDuplicateSorted:
 
 
 # ===================================================================
-# Stray File Handling
+# Missing File Recovery
 # ===================================================================
-
-
-class TestStrayArchive:
-    """Unknown file placed directly in archive/ should be moved to error/."""
-
-    def test_stray_in_archive_moved_to_error(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        # Write a file directly into archive/ that doesn't match any record
-        stray_name = f"stray_{uuid.uuid4().hex[:8]}.pdf"
-        stray_path = test_config.archive_dir / stray_name
-        write_test_file(stray_path, "This is an unknown stray file in archive")
-
-        # Should be moved to error/ (may be in a date subdirectory)
-        result = poll_for_file_recursive_in(
-            test_config.error_dir,
-            f"*{stray_name.replace('.pdf', '')}*",
-            test_config.poll_interval,
-            60,
-        )
-        assert result is not None, (
-            f"Stray file not moved to error/ within 60s"
-        )
-
-        # Original should be gone from archive/
-        assert not stray_path.exists(), "Stray file should be removed from archive/"
-
-
-class TestStrayIncoming:
-    """Unknown file placed in incoming/ should be processed normally."""
-
-    def test_unknown_incoming_processed(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        # Write an unknown txt file to incoming/
-        # Mock anthropic will return default metadata for unknown stems
-        file_stem = "stray_archive_doc"
-        content = f"Unknown document content. Unique: {uuid.uuid4().hex}"
-        write_test_file(
-            test_config.incoming_dir / f"{file_stem}.txt",
-            content,
-        )
-
-        # Should be processed (default metadata: date=2025-12-30, context=arbeit)
-        pattern = "arbeit-*2025-12-30*.txt"
-        result = poll_for_file(
-            test_config.processed_dir,
-            pattern,
-            test_config.poll_interval,
-            test_config.max_timeout,
-        )
-        assert result is not None, (
-            f"Unknown file not processed within {test_config.max_timeout}s"
-        )
-
-
-# ===================================================================
-# Missing File Detection
-# ===================================================================
-
-
-class TestMissingFileDetection:
-    """Processed file deleted from sorted/ -> record detects missing state,
-    archive file moves to missing/.
-    """
-
-    def test_sorted_deletion_triggers_missing(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        file_stem = "missing_test_doc"
-        context = "privat"
-        date = "2025-12-15"
-
-        # Process through full pipeline to sorted
-        sorted_file, archive_file = _process_to_sorted(
-            test_config, file_stem, context, date,
-        )
-        archive_name = archive_file.name
-
-        # Delete the file from sorted/
-        sorted_file.unlink()
-
-        # Archive file should eventually move to missing/
-        result = poll_for_file_recursive_in(
-            test_config.missing_dir,
-            f"*{file_stem}*",
-            test_config.poll_interval,
-            test_config.max_timeout,
-        )
-        assert result is not None, (
-            f"Archive file not moved to missing/ within {test_config.max_timeout}s"
-        )
-
-        # Original archive location should be empty
-        assert not archive_file.exists(), (
-            f"Archive file should have been moved from {archive_file}"
-        )
 
 
 class TestMissingFileRecovery:
@@ -407,61 +255,8 @@ class TestMissingFileRecovery:
 
 
 # ===================================================================
-# Deletion via Trash
+# Deletion via Trash (sorted → trash with source_hash matching)
 # ===================================================================
-
-
-class TestTrashDeletion:
-    """File moved to trash/ -> all associated files cleaned up to void/."""
-
-    def test_trash_cleans_up_to_void(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        file_stem = "trash_test_doc"
-        context = "arbeit"
-        date = "2025-12-20"
-
-        # Process through full pipeline to sorted
-        sorted_file, archive_file = _process_to_sorted(
-            test_config, file_stem, context, date,
-        )
-        sorted_name = sorted_file.name
-        archive_name = archive_file.name
-
-        # Move the sorted file to trash/
-        trash_dest = test_config.trash_dir / sorted_name
-        test_config.trash_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(sorted_file), trash_dest)
-
-        # Sorted file should be gone
-        assert poll_until_gone(
-            sorted_file,
-            test_config.poll_interval,
-            test_config.max_timeout,
-        ), "Sorted file should be removed"
-
-        # Archive file should eventually be cleaned up (moved to void/)
-        assert poll_until_gone(
-            archive_file,
-            test_config.poll_interval,
-            test_config.max_timeout,
-        ), "Archive file should be cleaned up after trash"
-
-        # Trash file itself should be moved to void/
-        assert poll_until_gone(
-            trash_dest,
-            test_config.poll_interval,
-            test_config.max_timeout,
-        ), "Trash file should be moved to void/"
-
-        # Verify files ended up in void/
-        void_match = poll_for_file_recursive_in(
-            test_config.void_dir,
-            f"*{file_stem}*",
-            test_config.poll_interval,
-            30,
-        )
-        assert void_match is not None, "No files found in void/"
 
 
 class TestTrashFromSorted:
@@ -627,117 +422,6 @@ class TestUserMoveContext:
         assert not sorted_file.exists(), (
             f"Old file should not exist at {sorted_file}"
         )
-
-
-# ===================================================================
-# Error Handling & Recovery
-# ===================================================================
-
-
-class TestErrorHandlingAndRecovery:
-    """Service returns error (empty PDF) -> source moved to error/.
-    Then: valid file resubmitted -> processed successfully.
-
-    Uses mock_ocr's empty-file error: 0-byte PDF triggers HTTP 422
-    (non-retryable input error).
-    """
-
-    def test_error_and_recovery(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        file_stem = "error_test_doc"
-
-        # --- Phase 1: Empty PDF → error/ ---
-        dest = test_config.incoming_dir / f"{file_stem}.pdf"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(".tmp")
-        tmp.write_bytes(b"")
-        tmp.rename(dest)
-
-        # Source should end up in error/ (may be in a date subdirectory)
-        error_file = poll_for_file_recursive_in(
-            test_config.error_dir,
-            f"*{file_stem}*",
-            test_config.poll_interval,
-            test_config.max_timeout,
-        )
-        assert error_file is not None, (
-            f"Empty PDF not moved to error/ within {test_config.max_timeout}s"
-        )
-
-        # Original should be gone from incoming/
-        assert not dest.exists(), "Source should be removed from incoming/"
-
-        # Let watcher settle before submitting recovery file
-        time.sleep(2)
-
-        # --- Phase 2: Recovery — valid content, same stem → processed/ ---
-        # Use .txt to avoid PDF-specific processing (embed_metadata fails on
-        # non-PDF content).  The service processes .txt via classification only.
-        recovery_content = (
-            f"Valid text content for {file_stem}. Unique: {uuid.uuid4().hex}"
-        )
-        write_test_file(
-            test_config.incoming_dir / f"{file_stem}.txt",
-            recovery_content,
-        )
-
-        # Should be processed successfully (mock: arbeit, 2025-12-08)
-        pattern = "arbeit-*2025-12-08*.txt"
-        processed = poll_for_file(
-            test_config.processed_dir,
-            pattern,
-            test_config.poll_interval,
-            test_config.max_timeout,
-        )
-        assert processed is not None, (
-            f"Recovery file not processed within {test_config.max_timeout}s "
-            f"(pattern: {pattern})"
-        )
-
-        verify_filename_components(
-            processed.name,
-            expected_context="arbeit",
-            expected_date="2025-12-08",
-        )
-
-
-class TestUnprocessableInputError:
-    """Non-retryable error (HTTP 422) moves file to error/ immediately.
-
-    Uses mock_ocr's encrypted-PDF detection: content starting with
-    ``b"ENCRYPTED:"`` triggers HTTP 422 (Unprocessable Entity).
-    The watcher should NOT retry and move the file to error/ promptly.
-    """
-
-    def test_encrypted_pdf_to_error(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        file_stem = "encrypted_test_doc"
-
-        # Submit a "encrypted" PDF (triggers 422 in mock_ocr)
-        dest = test_config.incoming_dir / f"{file_stem}.pdf"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.with_suffix(".tmp")
-        tmp.write_bytes(b"ENCRYPTED:" + b"fake encrypted content")
-        tmp.rename(dest)
-
-        # Should end up in error/ quickly (no extended retry).
-        # Use a shorter timeout than max_timeout to verify no retry delays.
-        error_timeout = min(test_config.max_timeout, 60.0)
-        error_file = poll_for_file_recursive_in(
-            test_config.error_dir,
-            f"*{file_stem}*",
-            test_config.poll_interval,
-            error_timeout,
-        )
-        assert error_file is not None, (
-            f"Encrypted PDF not moved to error/ within {error_timeout}s "
-            "(422 should be non-retryable)"
-        )
-
-        # Original should be gone from incoming/
-        assert not dest.exists(), "Source should be removed from incoming/"
 
 
 # ===================================================================
@@ -1204,225 +888,22 @@ class TestMigrationDedup:
             f"Expected 1 record after dedup, got {final_count}"
         )
 
-        # Winner must be variant_c (most recently updated)
+        # Winner must be variant_c (most recent updated_at)
         surviving = db_exec(
             "SELECT original_filename FROM mrdocument.documents_v2 "
             "WHERE original_filename LIKE 'dedup_variant_%'"
         )
         assert surviving == "dedup_variant_c.pdf", (
-            f"Expected newest record (variant_c) to win, got {surviving}"
+            f"Expected most recent record (variant_c) to win, got {surviving}"
         )
 
+        # Winner's files still in place
         assert (test_config.archive_dir / "dedup_variant_c.pdf").exists()
         assert (sorted_arbeit / processed_names["dedup_variant_c"]).exists()
 
-        # Losers' files moved to duplicates/ (archive + sorted files)
+        # Losers' files moved to duplicates/
         dup_files = list(test_config.duplicates_dir.rglob("*.pdf"))
         assert len(dup_files) >= 4, (
             f"Expected >= 4 files in duplicates/ (2 losers x 2 files), "
             f"found {len(dup_files)}: {[str(f) for f in dup_files]}"
-        )
-
-
-# ===================================================================
-# Date Added & History Folder
-# ===================================================================
-
-
-class TestDateAddedBackfill:
-    """Test that date_added is backfilled for existing records on restart.
-
-    Processes a file, NULLs out date_added in the DB, restarts the watcher,
-    and verifies the field is repopulated from the source path timestamp.
-    """
-
-    def test_date_added_backfill_on_restart(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        # 1. Process a text file through the pipeline
-        file_stem = "history_test_doc"
-        content = f"History test document. Unique: {uuid.uuid4().hex}"
-        write_test_file(
-            test_config.incoming_dir / f"{file_stem}.txt",
-            content,
-        )
-
-        # Poll for processed output
-        processed = poll_for_file(
-            test_config.processed_dir,
-            "arbeit-*2025-04-10*.txt",
-            test_config.poll_interval,
-            test_config.max_timeout,
-            exclude_names={f"{file_stem}.txt"},
-        )
-        assert processed is not None, "File not found in processed/ within timeout"
-
-        # Move to reviewed → sorted
-        existing_sorted = set(test_config.sorted_dir.rglob("*2025-04-10*.txt"))
-        reviewed_path = test_config.reviewed_dir / processed.name
-        shutil.move(str(processed), reviewed_path)
-
-        sorted_file = poll_for_file_recursive(
-            test_config.sorted_dir,
-            "*2025-04-10*.txt",
-            test_config.poll_interval,
-            test_config.max_timeout,
-            exclude_paths=existing_sorted,
-        )
-        assert sorted_file is not None, "File not found in sorted/ within timeout"
-
-        # Wait for DB to be fully updated
-        time.sleep(2)
-
-        # 2. Verify date_added is set
-        row = db_exec(
-            "SELECT date_added "
-            "FROM mrdocument.documents_v2 "
-            f"WHERE original_filename = '{file_stem}.txt'"
-        )
-        assert row and row != "", f"date_added should be set, got: {row}"
-
-        # 3. NULL out date_added
-        db_exec(
-            "UPDATE mrdocument.documents_v2 "
-            f"SET date_added = NULL "
-            f"WHERE original_filename = '{file_stem}.txt'"
-        )
-
-        # Verify it's NULL
-        row = db_exec(
-            "SELECT date_added IS NULL "
-            "FROM mrdocument.documents_v2 "
-            f"WHERE original_filename = '{file_stem}.txt'"
-        )
-        assert row == "t", f"date_added should be NULL, got: {row}"
-
-        # 4. Restart watcher (triggers backfill)
-        restart_watcher()
-
-        # 5. Poll until date_added is backfilled
-        deadline = time.monotonic() + test_config.max_timeout
-        backfilled = False
-        while time.monotonic() < deadline:
-            row = db_exec(
-                "SELECT date_added "
-                "FROM mrdocument.documents_v2 "
-                f"WHERE original_filename = '{file_stem}.txt'"
-            )
-            if row and row != "":
-                backfilled = True
-                break
-            time.sleep(test_config.poll_interval)
-
-        assert backfilled, "date_added was not backfilled after restart"
-
-
-class TestHistorySymlinks:
-    """Test that history/YYYY-MM-DD/ symlinks are created for completed files."""
-
-    def test_history_symlink_created(
-        self, test_config: TestConfig, clean_working_dirs,
-    ):
-        # 1. Process a text file through the pipeline to sorted/
-        file_stem = "history_test_doc"
-        content = f"History symlink test document. Unique: {uuid.uuid4().hex}"
-        write_test_file(
-            test_config.incoming_dir / f"{file_stem}.txt",
-            content,
-        )
-
-        # Poll for processed output
-        processed = poll_for_file(
-            test_config.processed_dir,
-            "arbeit-*2025-04-10*.txt",
-            test_config.poll_interval,
-            test_config.max_timeout,
-            exclude_names={f"{file_stem}.txt"},
-        )
-        assert processed is not None, "File not found in processed/ within timeout"
-
-        # Move to reviewed → sorted
-        existing_sorted = set(test_config.sorted_dir.rglob("*2025-04-10*.txt"))
-        reviewed_path = test_config.reviewed_dir / processed.name
-        shutil.move(str(processed), reviewed_path)
-
-        sorted_file = poll_for_file_recursive(
-            test_config.sorted_dir,
-            "*2025-04-10*.txt",
-            test_config.poll_interval,
-            test_config.max_timeout,
-            exclude_paths=existing_sorted,
-        )
-        assert sorted_file is not None, "File not found in sorted/ within timeout"
-
-        # 2. Wait and check for history symlink
-        history_dir = test_config.sync_folder / "history"
-
-        # Poll for any symlink in history/ pointing to this file
-        deadline = time.monotonic() + 60.0
-        history_link = None
-        while time.monotonic() < deadline:
-            if history_dir.exists():
-                for date_dir in history_dir.iterdir():
-                    if date_dir.is_dir():
-                        for link in date_dir.iterdir():
-                            if link.is_symlink() and link.name == sorted_file.name:
-                                history_link = link
-                                break
-                    if history_link:
-                        break
-            if history_link:
-                break
-            time.sleep(test_config.poll_interval)
-
-        assert history_link is not None, (
-            f"History symlink not found for {sorted_file.name} "
-            f"in history/"
-        )
-
-        # 3. Verify symlink resolves to the sorted file
-        resolved = history_link.resolve()
-        assert resolved == sorted_file.resolve(), (
-            f"History symlink should point to sorted file: "
-            f"{resolved} != {sorted_file.resolve()}"
-        )
-
-
-class TestInvalidContextConfigWarning:
-    """Verify that the watcher logs a warning when a context.yaml fails to parse.
-
-    Replicates the production bug where a double-quoted YAML regex
-    (e.g. ``".*\\.(mp4)$"``) contains an invalid escape sequence,
-    causing the entire config to be silently skipped.  After the fix,
-    the watcher must emit a WARN-level log line so operators can spot
-    the misconfiguration.
-    """
-
-    def test_invalid_yaml_warns(self, test_config: TestConfig):
-        # 1. Deploy a broken context config (double-quoted regex → bad YAML escape)
-        bad_ctx_dir = test_config.sorted_dir / "badctx"
-        bad_ctx_dir.mkdir(parents=True, exist_ok=True)
-        (bad_ctx_dir / "context.yaml").write_text(
-            'name: badctx\n'
-            'filename:\n'
-            '  - match: ".*\\.(mp4|m4a)$"\n'
-            "    pattern: '{context}-{date}'\n"
-            "  - pattern: '{context}-{date}'\n"
-            "folders:\n"
-            "  - context\n",
-            encoding="utf-8",
-        )
-
-        # 2. Restart watcher so it reloads all configs from scratch
-        restart_watcher()
-
-        # 3. Give the watcher time to run at least one config-load cycle
-        time.sleep(5)
-
-        # 4. Check logs for a warning about the failed parse
-        logs = watcher_logs(since="30s")
-        assert "badctx" in logs.lower() and "WARN" in logs, (
-            "Expected a WARN log mentioning 'badctx' after deploying an "
-            "invalid context.yaml, but found none in recent watcher logs.\n"
-            f"Logs (last 30s):\n{logs[-2000:]}"
         )

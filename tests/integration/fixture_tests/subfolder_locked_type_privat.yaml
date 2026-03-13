@@ -1,0 +1,12 @@
+contexts:
+  - privat
+files:
+  - filename: privat_arztbrief_mueller.rtf
+    path_of_generated_file: generated/privat_arztbrief_mueller.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/Versicherung/privat_arztbrief_mueller.rtf
+    expected:
+      - 'archive/privat_arztbrief_mueller\.rtf'
+      - 'sorted/privat/Versicherung/privat-.*2025-10-15.*\.pdf'

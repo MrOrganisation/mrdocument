@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: privat_arztbrief_braun.rtf
+    path_of_generated_file: generated/privat_arztbrief_braun.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/privat_arztbrief_braun.rtf
+    expected:
+      - 'archive/privat_arztbrief_braun\.rtf'
+      - 'sorted/arbeit/.*/arbeit-.*2025-04-10.*\.pdf'

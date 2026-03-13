@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: arbeit_vertrag_fischer.rtf
+    path_of_generated_file: generated/arbeit_vertrag_fischer.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/arbeit_vertrag_fischer.rtf
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.rtf'
+      - 'sorted/privat/Vertrag/privat-.*2025-06-01.*\.pdf'

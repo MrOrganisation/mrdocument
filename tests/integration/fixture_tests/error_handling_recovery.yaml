@@ -1,0 +1,21 @@
+contexts:
+  - arbeit
+files:
+  - filename: error_test_doc.pdf
+    content: ""
+  - filename: error_test_doc.txt
+    content: "Valid text content for error_test_doc. Unique: yaml-fixture-recovery"
+timeout: 300s
+steps:
+  # Phase 1: Empty PDF → error/
+  - input:
+      - incoming/error_test_doc.pdf
+    expected:
+      - 'error/.*error_test_doc.*'
+  # Phase 2: Valid text → processed normally
+  - input:
+      - incoming/error_test_doc.txt
+    expected:
+      - 'error/.*error_test_doc.*\.pdf'
+      - 'archive/error_test_doc\.txt'
+      - 'processed/arbeit-.*2025-12-08.*\.txt'

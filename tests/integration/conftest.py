@@ -651,6 +651,46 @@ def db_exec(sql: str) -> str:
 # Syncthing sync readiness
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# YAML Fixture Collection
+# ---------------------------------------------------------------------------
+
+FIXTURE_TESTS_DIR = INTEGRATION_DIR / "fixture_tests"
+
+
+def pytest_collect_file(parent, file_path):
+    """Collect YAML fixture files as pytest test items."""
+    if (
+        file_path.suffix == ".yaml"
+        and file_path.parent == FIXTURE_TESTS_DIR
+    ):
+        return YamlFixtureFile.from_parent(parent, path=file_path)
+
+
+class YamlFixtureFile(pytest.File):
+    """Collector for a single YAML fixture file."""
+
+    def collect(self):
+        yaml_path = self.path
+
+        def run_fixture(test_config):
+            from fixtures.loader import load_fixture
+            from fixtures.runner import FixtureRunner
+
+            fixture = load_fixture(yaml_path, INTEGRATION_DIR)
+            runner = FixtureRunner(
+                test_config.sync_folder, fixture, test_config.poll_interval,
+            )
+            runner.run()
+
+        run_fixture.__name__ = f"test_{self.path.stem}"
+        run_fixture.__qualname__ = f"test_{self.path.stem}"
+        run_fixture.__module__ = __name__
+        yield pytest.Function.from_parent(
+            self, name=self.path.stem, callobj=run_fixture,
+        )
+
+
 SYNCTHING_API_URL = "http://localhost:22384"
 SYNCTHING_API_KEY = "test-api-key-syncthing"
 SYNCTHING_FOLDER_ID = "mrdocument-testuser"

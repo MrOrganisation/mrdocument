@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: sorted_wrongctx_txt.rtf
+    path_of_generated_file: generated/sorted_wrongctx_txt.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/Schulze GmbH/sorted_wrongctx_txt.rtf
+    expected:
+      - 'archive/sorted_wrongctx_txt\.rtf'
+      - 'sorted/arbeit/Schulze GmbH/arbeit-.*2025-01-15.*\.pdf'

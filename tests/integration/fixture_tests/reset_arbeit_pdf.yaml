@@ -1,0 +1,21 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_vertrag_fischer.pdf
+    path_of_generated_file: generated/arbeit_vertrag_fischer.pdf
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/arbeit_vertrag_fischer.pdf
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'processed/arbeit-.*2025-06-01.*\.pdf'
+  # Step 2: copy_match processed to reset/ → sorted (reset file consumed)
+  - input:
+      - copy_match: 'processed/arbeit-.*2025-06-01.*\.pdf'
+        to: 'reset/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'processed/arbeit-.*2025-06-01.*\.pdf'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-06-01.*\.pdf'

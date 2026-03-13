@@ -1,0 +1,20 @@
+contexts:
+  - privat
+files:
+  - filename: privat_versicherung_allianz.txt
+    path_of_generated_file: generated/privat_versicherung_allianz.txt
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/privat_versicherung_allianz.txt
+    expected:
+      - 'archive/privat_versicherung_allianz\.txt'
+      - 'processed/privat-.*2025-07-22.*\.txt'
+  # Step 2: move processed to reviewed → sorted
+  - input:
+      - move: 'processed/privat-.*2025-07-22.*\.txt'
+        to: 'reviewed/'
+    expected:
+      - 'archive/privat_versicherung_allianz\.txt'
+      - 'sorted/privat/Versicherung/privat-.*2025-07-22.*\.txt'

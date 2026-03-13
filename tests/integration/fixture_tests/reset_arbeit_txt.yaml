@@ -1,0 +1,21 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_rechnung_keller.txt
+    path_of_generated_file: generated/arbeit_rechnung_keller.txt
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/arbeit_rechnung_keller.txt
+    expected:
+      - 'archive/arbeit_rechnung_keller\.txt'
+      - 'processed/arbeit-.*2025-05-12.*\.txt'
+  # Step 2: copy_match processed to reset/ → sorted (reset file consumed)
+  - input:
+      - copy_match: 'processed/arbeit-.*2025-05-12.*\.txt'
+        to: 'reset/'
+    expected:
+      - 'archive/arbeit_rechnung_keller\.txt'
+      - 'processed/arbeit-.*2025-05-12.*\.txt'
+      - 'sorted/arbeit/Keller und Partner/arbeit-.*2025-05-12.*\.txt'

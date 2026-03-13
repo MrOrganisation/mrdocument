@@ -1,0 +1,9 @@
+files:
+  - filename: stray_archive_test.pdf
+    content: "This is an unknown stray file in archive"
+timeout: 60s
+steps:
+  - input:
+      - archive/stray_archive_test.pdf
+    expected:
+      - 'error/.*stray_archive_test.*'

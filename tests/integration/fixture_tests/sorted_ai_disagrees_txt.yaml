@@ -1,0 +1,12 @@
+contexts:
+  - privat
+files:
+  - filename: sorted_wrongctx_txt.txt
+    path_of_generated_file: generated/sorted_wrongctx_txt.txt
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/sorted_wrongctx_txt.txt
+    expected:
+      - 'archive/sorted_wrongctx_txt\.txt'
+      - 'sorted/privat/.*/privat-.*2025-01-15.*\.txt'

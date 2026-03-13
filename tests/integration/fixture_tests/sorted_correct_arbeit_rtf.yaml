@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_rechnung_schulze.rtf
+    path_of_generated_file: generated/arbeit_rechnung_schulze.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/arbeit_rechnung_schulze.rtf
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.rtf'
+      - 'sorted/arbeit/Schulze GmbH/arbeit-.*2025-03-15.*\.pdf'

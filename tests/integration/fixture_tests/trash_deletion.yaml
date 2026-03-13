@@ -1,0 +1,27 @@
+contexts:
+  - arbeit
+files:
+  - filename: trash_test_doc.txt
+    content: "Test document trash_test_doc. Unique: yaml-fixture-trash-test"
+timeout: 300s
+steps:
+  # Step 1: Process through incoming
+  - input:
+      - incoming/trash_test_doc.txt
+    expected:
+      - 'archive/trash_test_doc\.txt'
+      - 'processed/arbeit-.*2025-12-20.*\.txt'
+  # Step 2: Move processed to reviewed → sorted
+  - input:
+      - move: 'processed/arbeit-.*2025-12-20.*\.txt'
+        to: 'reviewed/'
+    expected:
+      - 'archive/trash_test_doc\.txt'
+      - 'sorted/arbeit/.*/arbeit-.*2025-12-20.*\.txt'
+  # Step 3: Move sorted file to trash → everything to void/
+  - input:
+      - move: 'sorted/arbeit/.*/arbeit-.*2025-12-20.*\.txt'
+        to: 'trash/'
+    expected:
+      - 'void/.*trash_test_doc.*'
+      - 'void/.*arbeit.*2025-12-20.*'

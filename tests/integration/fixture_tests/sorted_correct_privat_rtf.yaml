@@ -1,0 +1,12 @@
+contexts:
+  - privat
+files:
+  - filename: privat_versicherung_allianz.rtf
+    path_of_generated_file: generated/privat_versicherung_allianz.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/privat_versicherung_allianz.rtf
+    expected:
+      - 'archive/privat_versicherung_allianz\.rtf'
+      - 'sorted/privat/Versicherung/privat-.*2025-07-22.*\.pdf'

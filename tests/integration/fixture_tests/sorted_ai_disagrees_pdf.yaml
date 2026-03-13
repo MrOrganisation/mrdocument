@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: sorted_wrongctx_pdf.pdf
+    path_of_generated_file: generated/sorted_wrongctx_pdf.pdf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/sorted_wrongctx_pdf.pdf
+    expected:
+      - 'archive/sorted_wrongctx_pdf\.pdf'
+      - 'sorted/arbeit/.*/arbeit-.*2025-01-10.*\.pdf'

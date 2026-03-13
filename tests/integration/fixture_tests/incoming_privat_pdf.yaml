@@ -1,0 +1,20 @@
+contexts:
+  - privat
+files:
+  - filename: privat_arztbrief_braun.pdf
+    path_of_generated_file: generated/privat_arztbrief_braun.pdf
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/privat_arztbrief_braun.pdf
+    expected:
+      - 'archive/privat_arztbrief_braun\.pdf'
+      - 'processed/privat-.*2025-04-10.*\.pdf'
+  # Step 2: move processed to reviewed → sorted
+  - input:
+      - move: 'processed/privat-.*2025-04-10.*\.pdf'
+        to: 'reviewed/'
+    expected:
+      - 'archive/privat_arztbrief_braun\.pdf'
+      - 'sorted/privat/Arztbrief/privat-.*2025-04-10.*\.pdf'

@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: arbeit_angebot_fischer.txt
+    path_of_generated_file: generated/arbeit_angebot_fischer.txt
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/arbeit_angebot_fischer.txt
+    expected:
+      - 'archive/arbeit_angebot_fischer\.txt'
+      - 'sorted/privat/Angebot/privat-.*2025-08-05.*\.txt'

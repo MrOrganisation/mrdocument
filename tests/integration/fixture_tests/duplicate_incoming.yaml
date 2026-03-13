@@ -1,0 +1,20 @@
+contexts:
+  - arbeit
+files:
+  - filename: dup_incoming_doc.txt
+    content: "Test document dup_incoming_doc. Unique: yaml-fixture-dup-test"
+timeout: 300s
+steps:
+  # Step 1: Process the file normally
+  - input:
+      - incoming/dup_incoming_doc.txt
+    expected:
+      - 'archive/dup_incoming_doc\.txt'
+      - 'processed/arbeit-.*2025-12-01.*\.txt'
+  # Step 2: Re-add the same content → duplicate detected
+  - input:
+      - incoming/dup_incoming_doc.txt
+    expected:
+      - 'archive/dup_incoming_doc\.txt'
+      - 'processed/arbeit-.*2025-12-01.*\.txt'
+      - 'duplicates/.*dup_incoming_doc.*'

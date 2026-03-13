@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: privat_arztbrief_mueller.pdf
+    path_of_generated_file: generated/privat_arztbrief_mueller.pdf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/privat_arztbrief_mueller.pdf
+    expected:
+      - 'archive/privat_arztbrief_mueller\.pdf'
+      - 'sorted/arbeit/.*/arbeit-.*2025-10-15.*\.pdf'

@@ -1,0 +1,21 @@
+contexts:
+  - privat
+files:
+  - filename: privat_kontoauszug_sparkasse.pdf
+    path_of_generated_file: generated/privat_kontoauszug_sparkasse.pdf
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/privat_kontoauszug_sparkasse.pdf
+    expected:
+      - 'archive/privat_kontoauszug_sparkasse\.pdf'
+      - 'processed/privat-.*2025-11-30.*\.pdf'
+  # Step 2: copy_match processed to reset/ → sorted (reset file consumed)
+  - input:
+      - copy_match: 'processed/privat-.*2025-11-30.*\.pdf'
+        to: 'reset/'
+    expected:
+      - 'archive/privat_kontoauszug_sparkasse\.pdf'
+      - 'processed/privat-.*2025-11-30.*\.pdf'
+      - 'sorted/privat/Kontoauszug/privat-.*2025-11-30.*\.pdf'

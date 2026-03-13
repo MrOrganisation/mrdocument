@@ -1,0 +1,12 @@
+contexts:
+  - privat
+files:
+  - filename: privat_kontoauszug_allianz.pdf
+    path_of_generated_file: generated/privat_kontoauszug_allianz.pdf
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/privat_kontoauszug_allianz.pdf
+    expected:
+      - 'archive/privat_kontoauszug_allianz\.pdf'
+      - 'sorted/privat/Kontoauszug/privat-.*2025-02-18.*\.pdf'

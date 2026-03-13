@@ -1,0 +1,12 @@
+contexts:
+  - arbeit
+files:
+  - filename: backfill_test_rechnung.rtf
+    path_of_generated_file: generated/backfill_test_rechnung.rtf
+timeout: 300s
+steps:
+  - input:
+      - sorted/arbeit/Fischer AG/backfill_test_rechnung.rtf
+    expected:
+      - 'archive/backfill_test_rechnung\.rtf'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-03-15.*\.pdf'

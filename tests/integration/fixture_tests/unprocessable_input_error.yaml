@@ -1,0 +1,9 @@
+files:
+  - filename: encrypted_test_doc.pdf
+    content: "ENCRYPTED:fake encrypted content"
+timeout: 60s
+steps:
+  - input:
+      - incoming/encrypted_test_doc.pdf
+    expected:
+      - 'error/.*encrypted_test_doc.*'

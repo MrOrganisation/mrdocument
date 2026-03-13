@@ -1,0 +1,12 @@
+contexts:
+  - testctx
+files:
+  - filename: condpattern-audio.m4a
+    path_of_generated_file: generated/condpattern-audio.m4a
+timeout: 300s
+steps:
+  - input:
+      - sorted/testctx/Notiz/condpattern-audio.m4a
+    expected:
+      - 'archive/condpattern-audio\.m4a'
+      - 'sorted/testctx/Notiz/testctx-condpattern_audio-2025-02-20\.txt'

@@ -1,0 +1,20 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_rechnung_schulze.pdf
+    path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
+timeout: 300s
+steps:
+  # Step 1: incoming → processed + archive
+  - input:
+      - incoming/arbeit_rechnung_schulze.pdf
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+  # Step 2: move processed to reviewed → sorted
+  - input:
+      - move: 'processed/arbeit-.*2025-03-15.*\.pdf'
+        to: 'reviewed/'
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'sorted/arbeit/Schulze GmbH/arbeit-.*2025-03-15.*\.pdf'

@@ -1,0 +1,12 @@
+contexts:
+  - privat
+files:
+  - filename: privat_arztbrief_braun.txt
+    path_of_generated_file: generated/privat_arztbrief_braun.txt
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/privat_arztbrief_braun.txt
+    expected:
+      - 'archive/privat_arztbrief_braun\.txt'
+      - 'sorted/privat/Arztbrief/privat-.*2025-04-10.*\.txt'

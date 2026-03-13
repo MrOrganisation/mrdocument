@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: arbeit_angebot_keller.pdf
+    path_of_generated_file: generated/arbeit_angebot_keller.pdf
+timeout: 300s
+steps:
+  - input:
+      - sorted/privat/arbeit_angebot_keller.pdf
+    expected:
+      - 'archive/arbeit_angebot_keller\.pdf'
+      - 'sorted/privat/Angebot/privat-.*2025-09-20.*\.pdf'
