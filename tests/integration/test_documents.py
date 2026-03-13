@@ -934,6 +934,115 @@ class TestSortedAiDisagrees:
         )
 
 
+# ===================================================================
+# Class 10: Subfolder field locking
+# ===================================================================
+
+SUBFOLDER_LOCKED_DOCS = [
+    {
+        "id": "sender_locked_arbeit",
+        "file_stem": "backfill_test_rechnung",
+        "fmt": "rtf",
+        "folder_context": "arbeit",
+        "subfolder": "Fischer AG",
+        "locked_field": "sender",
+        "ai_sender": "Schulze GmbH",
+        "date": "2025-03-15",
+        "out_ext": "pdf",
+    },
+    {
+        "id": "type_locked_privat",
+        "file_stem": "privat_arztbrief_mueller",
+        "fmt": "rtf",
+        "folder_context": "privat",
+        "subfolder": "Versicherung",
+        "locked_field": "type",
+        "ai_type": "Arztbrief",
+        "date": "2025-10-15",
+        "out_ext": "pdf",
+    },
+    {
+        "id": "sender_locked_txt",
+        "file_stem": "sorted_wrongctx_txt",
+        "fmt": "rtf",
+        "folder_context": "arbeit",
+        "subfolder": "Schulze GmbH",
+        "locked_field": "sender",
+        "date": "2025-01-15",
+        "out_ext": "pdf",
+    },
+]
+
+
+class TestSubfolderFieldLocking:
+    """Test that subfolder-derived metadata fields are locked.
+
+    When a file is placed in sorted/{context}/{subfolder}/, the subfolder
+    value (e.g. sender or type) must be locked: the AI cannot override it,
+    and the file must remain in that subfolder.
+
+    arbeit config:  folders: ["context", "sender"]
+    privat config:  folders: ["context", "type"]
+    """
+
+    @pytest.mark.parametrize(
+        "spec",
+        SUBFOLDER_LOCKED_DOCS,
+        ids=[s["id"] for s in SUBFOLDER_LOCKED_DOCS],
+    )
+    def test_subfolder_field_locked(
+        self, spec, test_config: TestConfig, generated_dir, clean_working_dirs,
+    ):
+        folder_ctx = spec["folder_context"]
+        subfolder = spec["subfolder"]
+        subfolder_dir = test_config.sorted_dir / folder_ctx / subfolder
+        subfolder_dir.mkdir(parents=True, exist_ok=True)
+        date = spec["date"]
+        out_ext = spec["out_ext"]
+        fmt = spec["fmt"]
+
+        # Snapshot existing files under the context dir
+        ctx_dir = test_config.sorted_dir / folder_ctx
+        existing = set(ctx_dir.rglob(f"*{date}*.{out_ext}"))
+
+        # Place file in the subfolder
+        src = generated_dir / f"{spec['file_stem']}.{fmt}"
+        assert src.exists(), f"Source file missing: {src}"
+        dest = subfolder_dir / src.name
+        atomic_copy(src, dest)
+
+        # Poll sorted/{context}/ recursively for renamed file
+        result = poll_for_file_recursive(
+            ctx_dir,
+            f"*{date}*.{out_ext}",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing,
+        )
+        assert result is not None, (
+            f"Renamed file not found in sorted/{folder_ctx}/ "
+            f"within {test_config.max_timeout}s (pattern: *{date}*.{out_ext})"
+        )
+
+        # Verify the file uses the locked context
+        verify_filename_components(
+            result.name,
+            expected_context=folder_ctx,
+            expected_date=date,
+        )
+
+        # Verify the file landed in the correct subfolder (locked field)
+        rel = result.relative_to(test_config.sorted_dir)
+        assert rel.parts[0] == folder_ctx, (
+            f"Expected context folder '{folder_ctx}', got '{rel.parts[0]}'"
+        )
+        assert rel.parts[1] == subfolder, (
+            f"File should be in sorted/{folder_ctx}/{subfolder}/ "
+            f"(locked {spec['locked_field']}), "
+            f"got sorted/{folder_ctx}/{rel.parts[1]}/"
+        )
+
+
 class TestConditionalFilenameAiDisagrees:
     """Test conditional filename pattern with context locking.
 
@@ -947,20 +1056,24 @@ class TestConditionalFilenameAiDisagrees:
     def test_conditional_pattern_audio_context_locked(
         self, test_config: TestConfig, generated_dir, clean_working_dirs,
     ):
-        ctx_dir = test_config.sorted_dir / "testctx"
-        ctx_dir.mkdir(parents=True, exist_ok=True)
+        # Place file in a type subfolder: sorted/testctx/Notiz/
+        # testctx config has folders: ["context", "type"], so Notiz maps to type.
+        # The AI will classify type as "Memo", but "Notiz" must be locked.
+        type_dir = test_config.sorted_dir / "testctx" / "Notiz"
+        type_dir.mkdir(parents=True, exist_ok=True)
         date = "2025-02-20"
 
         # Snapshot existing files
+        ctx_dir = test_config.sorted_dir / "testctx"
         existing = set(ctx_dir.rglob(f"*{date}*.txt"))
 
-        # Place audio file into sorted/testctx/
+        # Place audio file into sorted/testctx/Notiz/
         src = generated_dir / "condpattern-audio.m4a"
         assert src.exists(), f"Source audio missing: {src}"
-        dest = ctx_dir / "condpattern-audio.m4a"
+        dest = type_dir / "condpattern-audio.m4a"
         atomic_copy(src, dest)
 
-        # Poll sorted/testctx/ for the renamed output file
+        # Poll sorted/testctx/ recursively for the renamed output file
         result = poll_for_file_recursive(
             ctx_dir,
             f"*{date}*.txt",
@@ -973,21 +1086,25 @@ class TestConditionalFilenameAiDisagrees:
             f"within {test_config.max_timeout}s (pattern: *{date}*.txt)"
         )
 
-        # Verify the output uses the FOLDER context, not the AI context
-        stem = result.stem.lower()
-        assert "testctx" in stem, (
-            f"Filename should use locked context 'testctx', got: {result.name}"
-        )
-        assert "arbeit" not in stem, (
-            f"Filename must NOT use AI context 'arbeit', got: {result.name}"
-        )
-        assert date in stem, (
-            f"Filename should contain date '{date}', got: {result.name}"
+        # testctx config: filename pattern for audio is
+        #   {context}-{source_filename}-{date}
+        # context is locked to "testctx", source_filename is
+        # "condpattern-audio" (sanitized to "condpattern_audio"),
+        # date from AI is "2025-02-20".
+        expected = f"testctx-condpattern_audio-{date}"
+        assert result.stem.lower() == expected, (
+            f"Expected filename '{expected}.txt' from pattern "
+            f"'{{context}}-{{source_filename}}-{{date}}', got: {result.name}"
         )
 
-        # Conditional pattern for audio includes {source_filename}
-        # Hyphens are sanitized to underscores by the service
-        assert "condpattern_audio" in stem, (
-            f"Filename should contain source_filename 'condpattern_audio' "
-            f"(conditional audio pattern, hyphens sanitized), got: {result.name}"
+        # Verify the file landed in sorted/testctx/Notiz/ (locked type subfolder),
+        # NOT sorted/testctx/Memo/ (AI-classified type).
+        rel = result.relative_to(test_config.sorted_dir)
+        assert rel.parts[0] == "testctx", (
+            f"File should be in sorted/testctx/ (locked context), "
+            f"not sorted/{rel.parts[0]}/ (AI wanted 'arbeit')"
+        )
+        assert rel.parts[1] == "Notiz", (
+            f"File should be in sorted/testctx/Notiz/ (locked type), "
+            f"not sorted/testctx/{rel.parts[1]}/ (AI wanted different type)"
         )

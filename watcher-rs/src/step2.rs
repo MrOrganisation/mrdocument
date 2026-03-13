@@ -146,6 +146,33 @@ fn decompose_path(path: &str) -> (String, String, String) {
     Record::decompose_path(path)
 }
 
+/// Merge service metadata into existing, keeping non-null pre-set values.
+///
+/// Fields already present with non-null values in `existing` are preserved.
+/// New fields from `incoming` are added.
+pub fn merge_metadata(
+    existing: Option<&serde_json::Value>,
+    incoming: Option<serde_json::Value>,
+) -> Option<serde_json::Value> {
+    match (existing, incoming) {
+        (Some(existing), Some(incoming)) => {
+            let mut merged = incoming;
+            if let (Some(e_obj), Some(m_obj)) =
+                (existing.as_object(), merged.as_object_mut())
+            {
+                for (k, v) in e_obj {
+                    if !v.is_null() {
+                        m_obj.insert(k.clone(), v.clone());
+                    }
+                }
+            }
+            Some(merged)
+        }
+        (None, incoming) => incoming,
+        (existing, None) => existing.cloned(),
+    }
+}
+
 /// Add record index to modified list if not already there.
 fn mark_modified(record_id: Uuid, modified_ids: &mut HashSet<Uuid>) {
     modified_ids.insert(record_id);
@@ -154,6 +181,54 @@ fn mark_modified(record_id: Uuid, modified_ids: &mut HashSet<Uuid>) {
 // ---------------------------------------------------------------------------
 // compute_target_path
 // ---------------------------------------------------------------------------
+
+/// Compute locked_fields from a record's source paths and context_folders config.
+///
+/// Looks for a `sorted/` source path and extracts subfolder field values
+/// beyond the context (first) component.  Returns a JSON object in the
+/// format expected by the service: `{ "field": { "value": "..." }, ... }`.
+pub fn compute_locked_fields(
+    record: &Record,
+    context_folders: Option<&HashMap<String, Vec<String>>>,
+) -> Option<serde_json::Value> {
+    let folders_map = context_folders?;
+    let context = record.context.as_ref()?;
+    let folders = folders_map.get(context)?;
+
+    // Find a sorted/ source path (check source_paths then missing_source_paths)
+    let sorted_path = record
+        .source_paths
+        .iter()
+        .chain(record.missing_source_paths.iter())
+        .find(|pe| decompose_path(&pe.path).0 == "sorted")?;
+
+    let (_, loc_path, _) = decompose_path(&sorted_path.path);
+    if loc_path.is_empty() {
+        return None;
+    }
+    let parts: Vec<&str> = loc_path.split('/').collect();
+
+    let mut locked = serde_json::Map::new();
+    for (i, field) in folders.iter().enumerate() {
+        if field == "context" {
+            continue;
+        }
+        if let Some(value) = parts.get(i) {
+            if !value.is_empty() {
+                locked.insert(
+                    field.clone(),
+                    serde_json::json!({"value": *value}),
+                );
+            }
+        }
+    }
+
+    if locked.is_empty() {
+        None
+    } else {
+        Some(serde_json::Value::Object(locked))
+    }
+}
 
 /// Compute expected target path in `sorted/` for a record.
 ///
@@ -214,6 +289,7 @@ pub fn preprocess<F>(
     records: &mut Vec<Record>,
     new_records: &mut Vec<Record>,
     read_sidecar: F,
+    context_folders: Option<&HashMap<String, Vec<String>>>,
 ) -> (Vec<Uuid>, Vec<Record>)
 where
     F: Fn(&str) -> serde_json::Value,
@@ -233,6 +309,7 @@ where
                     &read_sidecar,
                     &mut modified_ids,
                     now,
+                    context_folders,
                 );
             }
             EventType::Removal => {
@@ -252,6 +329,7 @@ fn handle_addition<F>(
     read_sidecar: &F,
     modified_ids: &mut HashSet<Uuid>,
     now: DateTime<Utc>,
+    context_folders: Option<&HashMap<String, Vec<String>>>,
 ) where
     F: Fn(&str) -> serde_json::Value,
 {
@@ -303,7 +381,10 @@ fn handle_addition<F>(
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
                 }
-                record.metadata = sidecar.get("metadata").cloned();
+                record.metadata = merge_metadata(
+                    record.metadata.as_ref(),
+                    sidecar.get("metadata").cloned(),
+                );
                 record.assigned_filename = sidecar
                     .get("assigned_filename")
                     .and_then(|v| v.as_str())
@@ -446,11 +527,36 @@ fn handle_addition<F>(
             timestamp: now,
         });
 
-        // Pre-set context from directory for sorted/ files
+        // Pre-set context and metadata fields from directory for sorted/ files
         if location == "sorted" {
             let (_, loc_path, _) = decompose_path(&change.path);
             if !loc_path.is_empty() {
-                new_record.context = loc_path.split('/').next().map(|s| s.to_string());
+                let parts: Vec<&str> = loc_path.split('/').collect();
+                new_record.context = Some(parts[0].to_string());
+
+                // Extract additional subfolder fields into metadata
+                if let Some(folders_map) = context_folders {
+                    if let Some(folders) = folders_map.get(parts[0]) {
+                        let mut meta = serde_json::Map::new();
+                        for (i, field) in folders.iter().enumerate() {
+                            if field == "context" {
+                                continue;
+                            }
+                            if let Some(value) = parts.get(i) {
+                                if !value.is_empty() {
+                                    meta.insert(
+                                        field.clone(),
+                                        serde_json::Value::String(value.to_string()),
+                                    );
+                                }
+                            }
+                        }
+                        if !meta.is_empty() {
+                            new_record.metadata =
+                                Some(serde_json::Value::Object(meta));
+                        }
+                    }
+                }
             }
         }
 
@@ -816,11 +922,36 @@ pub fn reconcile<'a>(
 
             let (_, loc_path, _) = decompose_path(&current.path);
             if !loc_path.is_empty() {
-                let dir_context = loc_path.split('/').next().unwrap_or("");
+                let parts: Vec<&str> = loc_path.split('/').collect();
+                let dir_context = parts[0];
                 if !dir_context.is_empty()
                     && record.context.as_deref() != Some(dir_context)
                 {
                     record.context = Some(dir_context.to_string());
+                }
+
+                // Update metadata from subfolder fields
+                if let Some(folders_map) = context_folders {
+                    if let Some(folders) = folders_map.get(dir_context) {
+                        let metadata = record.metadata.get_or_insert_with(|| {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        });
+                        if let Some(obj) = metadata.as_object_mut() {
+                            for (i, field) in folders.iter().enumerate() {
+                                if field == "context" {
+                                    continue;
+                                }
+                                if let Some(value) = parts.get(i) {
+                                    if !value.is_empty() {
+                                        obj.insert(
+                                            field.clone(),
+                                            serde_json::Value::String(value.to_string()),
+                                        );
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -925,7 +1056,7 @@ mod tests {
         let (modified_ids, created) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 sidecar_data.clone()
-            });
+            }, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(modified_ids.contains(&records[0].id));
@@ -962,7 +1093,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert_eq!(records[0].state, State::HasError);
@@ -986,7 +1117,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
         assert!(created.is_empty());
@@ -1012,7 +1143,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(modified_ids.contains(&records[0].id));
@@ -1039,7 +1170,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
         assert_eq!(created.len(), 1);
@@ -1060,7 +1191,7 @@ mod tests {
         );
 
         let (_modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(created.len(), 1);
         assert!(
@@ -1094,6 +1225,7 @@ mod tests {
             &mut records,
             &mut new_records,
             _noop_sidecar,
+            None,
         );
 
         assert_eq!(
@@ -1127,7 +1259,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1153,7 +1285,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1178,7 +1310,7 @@ mod tests {
         );
 
         let (_modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(created.len(), 1);
         assert_eq!(created[0].original_filename, "unknown.pdf");
@@ -1205,7 +1337,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1230,7 +1362,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1256,7 +1388,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1281,7 +1413,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
         assert!(created.is_empty());
@@ -1299,7 +1431,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
         assert!(created.is_empty());
@@ -1321,7 +1453,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1346,7 +1478,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1373,7 +1505,7 @@ mod tests {
         let change = _make_change(EventType::Removal, "incoming/doc.pdf", None, None);
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(!records[0]
@@ -1400,7 +1532,7 @@ mod tests {
         let change = _make_change(EventType::Removal, "sorted/work/doc.pdf", None, None);
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(!records[0]
@@ -1434,7 +1566,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1464,7 +1596,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -1502,7 +1634,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(
             modified_ids.len(),
@@ -1537,7 +1669,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(
             modified_ids.len(),
@@ -1572,7 +1704,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -2467,7 +2599,7 @@ mod tests {
 
         let (modified_ids, _created) = preprocess(&[change], &mut records, &mut new_records, |_p| {
             json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
-        });
+        }, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(modified_ids.contains(&r2_id));
@@ -2514,7 +2646,7 @@ mod tests {
         let (_modified_ids, _created) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
-            });
+            }, None);
 
         assert_eq!(records[1].state, State::HasError);
         assert!(records[1]
@@ -2544,7 +2676,7 @@ mod tests {
         let (_modified_ids, _created) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {"date": "2025"}, "assigned_filename": "out.pdf"})
-            });
+            }, None);
 
         assert_eq!(records[0].hash.as_deref(), Some("XHASH"));
         assert_eq!(records[0].context.as_deref(), Some("work"));
@@ -2571,7 +2703,7 @@ mod tests {
         let (_modified_ids, _created) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
-            });
+            }, None);
 
         assert_eq!(records[0].hash.as_deref(), Some("NEWHASH"));
         assert_eq!(records[0].context.as_deref(), Some("work"));
@@ -2610,7 +2742,7 @@ mod tests {
         let (_modified_ids, _created) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
-            });
+            }, None);
 
         assert_eq!(records[1].state, State::HasError);
         assert!(records[1]
@@ -2659,7 +2791,7 @@ mod tests {
         let (_modified_ids, _created) =
             preprocess(&[c1, c2], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
-            });
+            }, None);
 
         // r1: ingested normally (first in the batch)
         assert_eq!(records[0].hash.as_deref(), Some("IDENTICAL"));
@@ -2705,7 +2837,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(modified_ids.contains(&records[0].id));
@@ -2736,7 +2868,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         // Matched by source_hash (first in list for incoming) → source_paths
@@ -2796,7 +2928,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
         assert!(records[0]
@@ -2817,7 +2949,7 @@ mod tests {
         );
 
         let (modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
         assert!(created.is_empty());
@@ -2840,7 +2972,7 @@ mod tests {
         );
 
         let (modified_ids, _created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         // source_hash match is not configured for reset/
         assert!(modified_ids.is_empty());
@@ -3075,7 +3207,7 @@ mod tests {
         };
 
         let (_modified, created) =
-            preprocess(&[sorted_change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[sorted_change], &mut records, &mut new_records, _noop_sidecar, None);
         assert_eq!(created.len(), 1, "Should create one new record");
         records.push(created.into_iter().next().unwrap());
 
@@ -3121,7 +3253,7 @@ mod tests {
             "assigned_filename": "ga-2026-01-10-file.txt",
         });
         let (_modified, _created) =
-            preprocess(&[output_change], &mut records, &mut new_records, |_| sidecar.clone());
+            preprocess(&[output_change], &mut records, &mut new_records, |_| sidecar.clone(), None);
 
         assert!(records[0].output_filename.is_none(), "output_filename consumed");
         assert_eq!(records[0].current_paths.len(), 1);
@@ -3163,7 +3295,7 @@ mod tests {
             size: Some(10000),
         };
         let (_modified, _created) =
-            preprocess(&[trash_change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[trash_change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(
             records[0].source_paths.iter().any(|pe| pe.path == "trash/file.m4a"),
@@ -3240,7 +3372,7 @@ mod tests {
         );
 
         let (_modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(created.len(), 1);
         let record = &created[0];
@@ -3287,6 +3419,7 @@ mod tests {
             &mut all_records,
             &mut Vec::new(),
             sidecar_fn,
+            None,
         );
 
         assert!(!modified_ids.is_empty());
@@ -3351,5 +3484,478 @@ mod tests {
             "Target path must NOT use AI-classified context 'arbeit', got: {}",
             target,
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Subfolder field extraction and locking tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_sorted_subfolder_field_locked_in_metadata() {
+        // sorted/arbeit/schmidt/file.pdf with folders: ["context", "sender"]
+        // → metadata should contain {"sender": "schmidt"}
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/schmidt/file.pdf",
+            Some("subfolder_hash"),
+            Some(1024),
+        );
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let (_modified_ids, created) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            Some(&context_folders),
+        );
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
+        let meta = created[0].metadata.as_ref().expect("metadata should be set");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("schmidt"),
+            "sender field should be extracted from subfolder"
+        );
+    }
+
+    #[test]
+    fn test_sorted_no_subfolder_no_metadata() {
+        // sorted/arbeit/file.pdf (no subfolder) → metadata should be None
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/file.pdf",
+            Some("no_subfolder_hash"),
+            Some(1024),
+        );
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let (_modified_ids, created) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            Some(&context_folders),
+        );
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
+        // No subfolder → no metadata (context is first folder, no second)
+        assert!(
+            created[0].metadata.is_none(),
+            "metadata should be None when no subfolder fields"
+        );
+    }
+
+    #[test]
+    fn test_sorted_deep_folder_structure() {
+        // sorted/arbeit/schmidt/Rechnung/file.pdf
+        // folders: ["context", "sender", "type"]
+        // → metadata should contain {"sender": "schmidt", "type": "Rechnung"}
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/schmidt/Rechnung/file.pdf",
+            Some("deep_hash"),
+            Some(1024),
+        );
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec![
+                "context".to_string(),
+                "sender".to_string(),
+                "type".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+
+        let (_modified_ids, created) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            Some(&context_folders),
+        );
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
+        let meta = created[0].metadata.as_ref().expect("metadata should be set");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("schmidt"),
+        );
+        assert_eq!(
+            meta.get("type").and_then(|v| v.as_str()),
+            Some("Rechnung"),
+        );
+    }
+
+    #[test]
+    fn test_sorted_partial_folder_structure() {
+        // sorted/arbeit/schmidt/file.pdf with folders: ["context", "sender", "type"]
+        // Only 2 levels present → metadata has sender but not type
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/schmidt/file.pdf",
+            Some("partial_hash"),
+            Some(1024),
+        );
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec![
+                "context".to_string(),
+                "sender".to_string(),
+                "type".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+
+        let (_modified_ids, created) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            Some(&context_folders),
+        );
+
+        assert_eq!(created.len(), 1);
+        let meta = created[0].metadata.as_ref().expect("metadata should be set");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("schmidt"),
+        );
+        // type not present in path → not in metadata
+        assert!(
+            meta.get("type").is_none(),
+            "type should not be in metadata when not present in path"
+        );
+    }
+
+    #[test]
+    fn test_sorted_no_context_folders_config() {
+        // sorted/arbeit/schmidt/file.pdf with NO context_folders → just context set
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/schmidt/file.pdf",
+            Some("no_config_hash"),
+            Some(1024),
+        );
+
+        let (_modified_ids, created) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+        );
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
+        // No context_folders config → no metadata from subfolder
+        assert!(created[0].metadata.is_none());
+    }
+
+    #[test]
+    fn test_sorted_context_not_in_folders_config() {
+        // sorted/arbeit/schmidt/file.pdf but folders config only has "privat"
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/schmidt/file.pdf",
+            Some("no_ctx_match_hash"),
+            Some(1024),
+        );
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "privat".to_string(),
+            vec!["context".to_string(), "type".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let (_modified_ids, created) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            Some(&context_folders),
+        );
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
+        // Context not in folders config → no metadata
+        assert!(created[0].metadata.is_none());
+    }
+
+    #[test]
+    fn test_compute_locked_fields_from_source_path() {
+        // Record with sorted/ source path → locked_fields extracted
+        let mut rec = _make_record();
+        rec.context = Some("arbeit".to_string());
+        rec.source_paths.push(PathEntry {
+            path: "sorted/arbeit/schmidt/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let locked = compute_locked_fields(&rec, Some(&context_folders));
+        let locked = locked.expect("should produce locked_fields");
+        let sender = locked.get("sender").expect("should have sender");
+        assert_eq!(sender.get("value").unwrap().as_str(), Some("schmidt"));
+    }
+
+    #[test]
+    fn test_compute_locked_fields_deep_path() {
+        // Record with deep sorted/ source path
+        let mut rec = _make_record();
+        rec.context = Some("arbeit".to_string());
+        rec.source_paths.push(PathEntry {
+            path: "sorted/arbeit/schmidt/Rechnung/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec![
+                "context".to_string(),
+                "sender".to_string(),
+                "type".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+
+        let locked = compute_locked_fields(&rec, Some(&context_folders));
+        let locked = locked.expect("should produce locked_fields");
+        assert_eq!(
+            locked.get("sender").unwrap().get("value").unwrap().as_str(),
+            Some("schmidt"),
+        );
+        assert_eq!(
+            locked.get("type").unwrap().get("value").unwrap().as_str(),
+            Some("Rechnung"),
+        );
+    }
+
+    #[test]
+    fn test_compute_locked_fields_from_missing_source_paths() {
+        // Record where sorted/ path is in missing_source_paths
+        let mut rec = _make_record();
+        rec.context = Some("arbeit".to_string());
+        rec.missing_source_paths.push(PathEntry {
+            path: "sorted/arbeit/schmidt/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        rec.source_paths.push(PathEntry {
+            path: "archive/file.pdf".to_string(),
+            timestamp: _ts(1),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let locked = compute_locked_fields(&rec, Some(&context_folders));
+        let locked = locked.expect("should find locked_fields from missing_source_paths");
+        assert_eq!(
+            locked.get("sender").unwrap().get("value").unwrap().as_str(),
+            Some("schmidt"),
+        );
+    }
+
+    #[test]
+    fn test_compute_locked_fields_no_sorted_path() {
+        // Record with only incoming/ source → no locked_fields
+        let mut rec = _make_record();
+        rec.context = Some("arbeit".to_string());
+        rec.source_paths.push(PathEntry {
+            path: "incoming/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let locked = compute_locked_fields(&rec, Some(&context_folders));
+        assert!(locked.is_none(), "no sorted/ path → no locked_fields");
+    }
+
+    #[test]
+    fn test_compute_locked_fields_only_context_folder() {
+        // folders: ["context"] only → no locked fields (context isn't locked_fields)
+        let mut rec = _make_record();
+        rec.context = Some("arbeit".to_string());
+        rec.source_paths.push(PathEntry {
+            path: "sorted/arbeit/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let locked = compute_locked_fields(&rec, Some(&context_folders));
+        assert!(locked.is_none(), "only context folder → no locked_fields");
+    }
+
+    #[test]
+    fn test_merge_metadata_preserves_preset_values() {
+        let existing = json!({"sender": "schmidt"});
+        let incoming = json!({"sender": "Mueller", "type": "Rechnung", "date": "2025-01-15"});
+
+        let merged = merge_metadata(Some(&existing), Some(incoming));
+        let merged = merged.unwrap();
+
+        assert_eq!(merged.get("sender").unwrap().as_str(), Some("schmidt"),
+            "pre-set sender should be preserved");
+        assert_eq!(merged.get("type").unwrap().as_str(), Some("Rechnung"),
+            "type from service should be added");
+        assert_eq!(merged.get("date").unwrap().as_str(), Some("2025-01-15"),
+            "date from service should be added");
+    }
+
+    #[test]
+    fn test_merge_metadata_no_existing() {
+        let incoming = json!({"type": "Rechnung"});
+        let merged = merge_metadata(None, Some(incoming));
+        assert_eq!(merged.unwrap().get("type").unwrap().as_str(), Some("Rechnung"));
+    }
+
+    #[test]
+    fn test_merge_metadata_no_incoming() {
+        let existing = json!({"sender": "schmidt"});
+        let merged = merge_metadata(Some(&existing), None);
+        assert_eq!(merged.unwrap().get("sender").unwrap().as_str(), Some("schmidt"));
+    }
+
+    #[test]
+    fn test_merge_metadata_null_existing_overwritten() {
+        // Null values in existing should be overwritten by incoming
+        let existing = json!({"sender": null, "type": "Notiz"});
+        let incoming = json!({"sender": "Mueller", "type": "Rechnung"});
+
+        let merged = merge_metadata(Some(&existing), Some(incoming));
+        let merged = merged.unwrap();
+
+        assert_eq!(merged.get("sender").unwrap().as_str(), Some("Mueller"),
+            "null existing value should be overwritten");
+        assert_eq!(merged.get("type").unwrap().as_str(), Some("Notiz"),
+            "non-null existing value should be preserved");
+    }
+
+    #[test]
+    fn test_reconcile_sorted_updates_metadata_from_subfolder() {
+        // Record with current_path in sorted/arbeit/schmidt/file.pdf
+        // → reconcile should set sender in metadata
+        let mut rec = _make_record();
+        rec.state = State::IsComplete;
+        rec.hash = Some("h".to_string());
+        rec.context = Some("arbeit".to_string());
+        rec.assigned_filename = Some("file.pdf".to_string());
+        rec.current_paths.push(PathEntry {
+            path: "sorted/arbeit/schmidt/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        rec.source_paths.push(PathEntry {
+            path: "archive/file.pdf".to_string(),
+            timestamp: _ts(-1),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        let result = reconcile(&mut rec, None, Some(&context_folders), None);
+        let r = result.unwrap();
+
+        let meta = r.metadata.as_ref().expect("metadata should be set");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("schmidt"),
+            "reconcile should set sender from subfolder"
+        );
+    }
+
+    #[test]
+    fn test_reconcile_sorted_deep_updates_metadata() {
+        // sorted/arbeit/schmidt/Rechnung/file.pdf with folders: ["context", "sender", "type"]
+        let mut rec = _make_record();
+        rec.state = State::IsComplete;
+        rec.hash = Some("h".to_string());
+        rec.context = Some("arbeit".to_string());
+        rec.assigned_filename = Some("file.pdf".to_string());
+        rec.metadata = Some(json!({"sender": "old", "type": "old"}));
+        rec.current_paths.push(PathEntry {
+            path: "sorted/arbeit/schmidt/Rechnung/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        rec.source_paths.push(PathEntry {
+            path: "archive/file.pdf".to_string(),
+            timestamp: _ts(-1),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec![
+                "context".to_string(),
+                "sender".to_string(),
+                "type".to_string(),
+            ],
+        )]
+        .into_iter()
+        .collect();
+
+        let result = reconcile(&mut rec, None, Some(&context_folders), None);
+        let r = result.unwrap();
+
+        let meta = r.metadata.as_ref().unwrap();
+        assert_eq!(meta.get("sender").unwrap().as_str(), Some("schmidt"));
+        assert_eq!(meta.get("type").unwrap().as_str(), Some("Rechnung"));
     }
 }

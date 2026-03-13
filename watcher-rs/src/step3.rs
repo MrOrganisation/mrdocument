@@ -290,11 +290,21 @@ impl Processor {
                 all_contexts
             };
 
+            // Compute locked_fields from source path + context_folders config
+            let locked_fields = self.context_manager.as_ref().and_then(|cm| {
+                let folders: std::collections::HashMap<String, Vec<String>> = cm
+                    .contexts
+                    .iter()
+                    .map(|(name, ctx)| (name.clone(), ctx.folders.clone()))
+                    .collect();
+                crate::step2::compute_locked_fields(record, Some(&folders))
+            });
+
             let result: Option<serde_json::Value> = if is_aud {
-                self.process_audio(&file_bytes, &filename, content_type, &contexts)
+                self.process_audio(&file_bytes, &filename, content_type, &contexts, locked_fields.as_ref())
                     .await?
             } else {
-                self.call_service(&file_bytes, &filename, content_type, "document", &contexts)
+                self.call_service(&file_bytes, &filename, content_type, "document", &contexts, locked_fields.as_ref())
                     .await?
             };
 
@@ -389,6 +399,7 @@ impl Processor {
         content_type: &str,
         file_type: &str,
         contexts: &[serde_json::Value],
+        locked_fields: Option<&serde_json::Value>,
     ) -> Result<Option<serde_json::Value>> {
         let url = format!("{}/process", self.service_url);
 
@@ -399,16 +410,20 @@ impl Processor {
         let contexts_json = serde_json::to_string(contexts)?;
         let root_str = self.root.to_string_lossy().to_string();
         let label_filename = filename_owned.clone();
+        let locked_fields_json = locked_fields.map(|lf| lf.to_string());
 
         let make_form = move || -> Result<multipart::Form> {
             let file_part = multipart::Part::bytes(file_bytes.clone())
                 .file_name(filename_owned.clone())
                 .mime_str(&content_type)?;
-            let form = multipart::Form::new()
+            let mut form = multipart::Form::new()
                 .part("file", file_part)
                 .text("type", file_type.clone())
                 .text("contexts", contexts_json.clone())
                 .text("user_dir", root_str.clone());
+            if let Some(ref lf) = locked_fields_json {
+                form = form.text("locked_fields", lf.clone());
+            }
             Ok(form)
         };
 
@@ -429,6 +444,7 @@ impl Processor {
         filename: &str,
         content_type: &str,
         contexts: &[serde_json::Value],
+        locked_fields: Option<&serde_json::Value>,
     ) -> Result<Option<serde_json::Value>> {
         // Check prerequisites
         let stt_url = match &self.stt_url {
@@ -501,7 +517,7 @@ impl Processor {
         }
 
         // Step 4: Process transcript (required)
-        self.process_transcript(&transcript, filename, pre_classified.as_ref(), contexts)
+        self.process_transcript(&transcript, filename, pre_classified.as_ref(), contexts, locked_fields)
             .await
     }
 
@@ -762,6 +778,7 @@ impl Processor {
         filename: &str,
         pre_classified: Option<&serde_json::Value>,
         contexts: &[serde_json::Value],
+        locked_fields: Option<&serde_json::Value>,
     ) -> Result<Option<serde_json::Value>> {
         let mut request_body = serde_json::json!({
             "transcript": transcript,
@@ -775,6 +792,13 @@ impl Processor {
                 .as_object_mut()
                 .unwrap()
                 .insert("pre_classified".to_string(), pc.clone());
+        }
+
+        if let Some(lf) = locked_fields {
+            request_body
+                .as_object_mut()
+                .unwrap()
+                .insert("locked_fields".to_string(), lf.clone());
         }
 
         let url = format!("{}/process_transcript", self.service_url);

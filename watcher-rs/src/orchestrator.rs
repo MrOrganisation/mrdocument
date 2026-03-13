@@ -392,7 +392,10 @@ impl DocumentWatcherV2 {
                 fresh.context = Some(ctx.to_string());
             }
         }
-        fresh.metadata = sidecar.get("metadata").cloned();
+        fresh.metadata = step2::merge_metadata(
+            fresh.metadata.as_ref(),
+            sidecar.get("metadata").cloned(),
+        );
         fresh.assigned_filename = sidecar
             .get("assigned_filename")
             .and_then(|v| v.as_str())
@@ -567,6 +570,7 @@ impl DocumentWatcherV2 {
                 &mut snapshot_mut,
                 &mut created,
                 |path| Self::read_sidecar_from_root(&self.root, &self.name, path),
+                self.context_folders.as_ref(),
             );
             modified_ids = m_ids;
             new_records = created_recs;
