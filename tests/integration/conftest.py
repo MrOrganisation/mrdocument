@@ -613,6 +613,23 @@ def restart_watcher(timeout: float = 60) -> None:
     )
 
 
+def watcher_logs(since: str = "5m") -> str:
+    """Fetch recent watcher container logs.
+
+    *since* is a Docker duration string (e.g. ``"5m"``, ``"30s"``).
+    """
+    import subprocess
+    result = subprocess.run(
+        [
+            "docker", "logs", "--since", since,
+            "integration-mrdocument-watcher-1",
+        ],
+        capture_output=True, text=True, timeout=10,
+    )
+    # Docker writes logs to stderr
+    return result.stdout + result.stderr
+
+
 def db_exec(sql: str) -> str:
     """Execute a SQL statement against the integration test database.
 

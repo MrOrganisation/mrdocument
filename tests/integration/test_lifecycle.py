@@ -29,6 +29,7 @@ from conftest import (
     poll_until_symlink_gone,
     restart_watcher,
     verify_filename_components,
+    watcher_logs,
     write_test_file,
 )
 
@@ -1384,4 +1385,44 @@ class TestHistorySymlinks:
         assert resolved == sorted_file.resolve(), (
             f"History symlink should point to sorted file: "
             f"{resolved} != {sorted_file.resolve()}"
+        )
+
+
+class TestInvalidContextConfigWarning:
+    """Verify that the watcher logs a warning when a context.yaml fails to parse.
+
+    Replicates the production bug where a double-quoted YAML regex
+    (e.g. ``".*\\.(mp4)$"``) contains an invalid escape sequence,
+    causing the entire config to be silently skipped.  After the fix,
+    the watcher must emit a WARN-level log line so operators can spot
+    the misconfiguration.
+    """
+
+    def test_invalid_yaml_warns(self, test_config: TestConfig):
+        # 1. Deploy a broken context config (double-quoted regex → bad YAML escape)
+        bad_ctx_dir = test_config.sorted_dir / "badctx"
+        bad_ctx_dir.mkdir(parents=True, exist_ok=True)
+        (bad_ctx_dir / "context.yaml").write_text(
+            'name: badctx\n'
+            'filename:\n'
+            '  - match: ".*\\.(mp4|m4a)$"\n'
+            "    pattern: '{context}-{date}'\n"
+            "  - pattern: '{context}-{date}'\n"
+            "folders:\n"
+            "  - context\n",
+            encoding="utf-8",
+        )
+
+        # 2. Restart watcher so it reloads all configs from scratch
+        restart_watcher()
+
+        # 3. Give the watcher time to run at least one config-load cycle
+        time.sleep(5)
+
+        # 4. Check logs for a warning about the failed parse
+        logs = watcher_logs(since="30s")
+        assert "badctx" in logs.lower() and "WARN" in logs, (
+            "Expected a WARN log mentioning 'badctx' after deploying an "
+            "invalid context.yaml, but found none in recent watcher logs.\n"
+            f"Logs (last 30s):\n{logs[-2000:]}"
         )
