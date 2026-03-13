@@ -116,7 +116,7 @@ def load_fixture(path: Path, integration_dir: Path) -> FixtureSpec:
             content = f["content"]
         files[fn] = FileRef(filename=fn, source_path=source_path, content=content)
 
-    default_timeout = _parse_timeout(raw.get("timeout", "60s"))
+    default_timeout = _parse_timeout(raw.get("timeout", "10s"))
 
     # Parse steps
     steps: list[StepSpec] = []

@@ -17,5 +17,5 @@ steps:
         to: 'reset/'
     expected:
       - 'archive/arbeit_rechnung_keller\.txt'
-      - 'processed/arbeit-.*2025-05-12.*\.txt'
       - 'sorted/arbeit/Keller und Partner/arbeit-.*2025-05-12.*\.txt'
+      - 'void/.*/processed/arbeit-.*2025-05-12.*\.txt'

@@ -17,5 +17,5 @@ steps:
         to: 'reset/'
     expected:
       - 'archive/privat_kontoauszug_sparkasse\.pdf'
-      - 'processed/privat-.*2025-11-30.*\.pdf'
       - 'sorted/privat/Kontoauszug/privat-.*2025-11-30.*\.pdf'
+      - 'void/.*/processed/privat-.*2025-11-30.*\.pdf'
