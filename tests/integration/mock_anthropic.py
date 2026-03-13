@@ -237,6 +237,13 @@ DOCUMENT_METADATA = {
         "sender": "Schulze GmbH",
         "date": "2025-02-20",
     },
+    # Audio subfolder locking test (AI disagrees on sender)
+    "subfolder-locked-audio": {
+        "context": "arbeit",
+        "type": "Rechnung",
+        "sender": "Schulze GmbH",
+        "date": "2025-11-05",
+    },
     # Video files (mov, mp4)
     "videocall": {
         "context": "arbeit",

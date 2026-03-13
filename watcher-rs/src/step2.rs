@@ -3516,6 +3516,177 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_sorted_audio_subfolder_locked_full_lifecycle() {
+        // Full lifecycle test: audio file in sorted/arbeit/Fischer AG/
+        // with folders: ["context", "sender"].
+        //
+        // Simulates multiple watcher cycles:
+        //   Cycle 1: detect file, create record, reconcile (IsNew → NeedsProcessing),
+        //            move source to archive
+        //   Cycle 2: detect source removal, detect archive addition,
+        //            launch processing (verify compute_locked_fields)
+        //   Cycle 3: sidecar arrives (AI disagrees on sender), ingest, reconcile
+        //
+        // The sender field must stay locked to "Fischer AG" throughout.
+
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "arbeit".to_string(),
+            vec!["context".to_string(), "sender".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
+        // === Cycle 1: file detected in sorted/arbeit/Fischer AG/ ===
+        let mut records: Vec<Record> = Vec::new();
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "sorted/arbeit/Fischer AG/subfolder-locked-audio.m4a",
+            Some("audio_subfolder_hash"),
+            Some(126000),
+        );
+
+        let (_modified_ids, created) =
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, Some(&context_folders));
+
+        assert_eq!(created.len(), 1);
+        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
+        let meta = created[0].metadata.as_ref().expect("metadata must be set from subfolder");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("Fischer AG"),
+            "sender must be extracted from subfolder at creation"
+        );
+
+        // Reconcile: IsNew → NeedsProcessing
+        let mut all_records = created;
+        let result = reconcile(&mut all_records[0], None, Some(&context_folders), None);
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+        let output_uuid = r.output_filename.clone().unwrap();
+
+        // Metadata must survive reconcile
+        let meta = r.metadata.as_ref().expect("metadata must survive reconcile");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("Fischer AG"),
+            "sender must survive reconcile"
+        );
+
+        // === Cycle 2: source moved to archive (step4 ran) ===
+        // Detect removal of sorted/ path
+        let removal = _make_change(
+            EventType::Removal,
+            "sorted/arbeit/Fischer AG/subfolder-locked-audio.m4a",
+            None,
+            None,
+        );
+        let (modified_ids, _) = preprocess(
+            &[removal],
+            &mut all_records,
+            &mut Vec::new(),
+            _noop_sidecar,
+            Some(&context_folders),
+        );
+        assert!(!modified_ids.is_empty(), "removal should modify record");
+
+        // sorted/ path moved to missing_source_paths
+        assert!(
+            all_records[0].missing_source_paths.iter().any(|pe| pe.path.starts_with("sorted/")),
+            "sorted/ path should be in missing_source_paths"
+        );
+
+        // Metadata must survive source removal
+        let meta = all_records[0].metadata.as_ref().expect("metadata must survive source removal");
+        assert_eq!(
+            meta.get("sender").and_then(|v| v.as_str()),
+            Some("Fischer AG"),
+            "sender must survive source removal"
+        );
+
+        // Verify compute_locked_fields works from missing_source_paths
+        // (this is the state the record is in when step3 runs)
+        let locked = compute_locked_fields(&all_records[0], Some(&context_folders));
+        let locked = locked.expect("compute_locked_fields must find sorted/ in missing_source_paths");
+        assert_eq!(
+            locked.get("sender").unwrap().get("value").unwrap().as_str(),
+            Some("Fischer AG"),
+            "locked_fields must contain sender from subfolder"
+        );
+
+        // === Cycle 3: processing complete, sidecar arrives ===
+        // AI disagrees: sender="Schulze GmbH", context="arbeit"
+        let sidecar_fn = |path: &str| -> serde_json::Value {
+            if path.contains(&output_uuid) {
+                json!({
+                    "context": "arbeit",
+                    "metadata": {
+                        "context": "arbeit",
+                        "type": "Rechnung",
+                        "sender": "Schulze GmbH",
+                        "date": "2025-11-05"
+                    },
+                    "assigned_filename": "arbeit-2025-11-05-fischer_ag-rechnung.txt"
+                })
+            } else {
+                json!({})
+            }
+        };
+
+        let output_change = _make_change(
+            EventType::Addition,
+            &format!(".output/{}", output_uuid),
+            Some("output_hash_audio"),
+            Some(5000),
+        );
+        let (modified_ids, _) = preprocess(
+            &[output_change],
+            &mut all_records,
+            &mut Vec::new(),
+            sidecar_fn,
+            Some(&context_folders),
+        );
+        assert!(!modified_ids.is_empty());
+
+        let r = &all_records[0];
+        // Context stays "arbeit"
+        assert_eq!(r.context.as_deref(), Some("arbeit"));
+
+        // Sender must stay locked to "Fischer AG", NOT AI's "Schulze GmbH"
+        let meta = r.metadata.as_ref().unwrap();
+        assert_eq!(
+            meta.get("sender").unwrap().as_str(),
+            Some("Fischer AG"),
+            "sender must remain locked to subfolder value, not AI's 'Schulze GmbH'"
+        );
+        // Non-locked fields from AI are adopted
+        assert_eq!(meta.get("type").unwrap().as_str(), Some("Rechnung"));
+        assert_eq!(meta.get("date").unwrap().as_str(), Some("2025-11-05"));
+
+        // === Final reconcile: compute target_path ===
+        let result = reconcile(
+            &mut all_records[0],
+            None,
+            Some(&context_folders),
+            None,
+        );
+        let r = result.unwrap();
+
+        let target = r.target_path.as_deref().unwrap();
+        assert!(
+            target.starts_with("sorted/arbeit/Fischer AG/"),
+            "Target path must use locked sender subfolder 'Fischer AG', got: {}",
+            target,
+        );
+        assert!(
+            !target.contains("Schulze"),
+            "Target path must NOT use AI's sender 'Schulze GmbH', got: {}",
+            target,
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Subfolder field extraction and locking tests
     // -----------------------------------------------------------------------
