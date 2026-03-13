@@ -373,6 +373,35 @@ def verify_intro_in_text(
 
 
 # ---------------------------------------------------------------------------
+# Config deployment
+# ---------------------------------------------------------------------------
+
+CONFIG_DIR = INTEGRATION_DIR / "config"
+
+
+def _deploy_configs(test_config: TestConfig) -> None:
+    """Deploy sorted/{context}/ configs and root-level configs into the
+    sync folder so the watcher discovers the test user."""
+    if not CONFIG_DIR.is_dir():
+        return
+    test_config.sync_folder.mkdir(parents=True, exist_ok=True)
+    # Deploy sorted/{context}/context.yaml and smartfolders.yaml
+    sorted_config_dir = CONFIG_DIR / "sorted"
+    if sorted_config_dir.is_dir():
+        for ctx_dir in sorted_config_dir.iterdir():
+            if ctx_dir.is_dir():
+                dest_dir = test_config.sorted_dir / ctx_dir.name
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                for src in ctx_dir.iterdir():
+                    if src.suffix in (".yaml", ".yml"):
+                        shutil.copy2(src, dest_dir / src.name)
+    # Deploy root-level configs (config.yaml, stt.yaml)
+    for src in CONFIG_DIR.iterdir():
+        if src.is_file() and src.suffix in (".yaml", ".yml"):
+            shutil.copy2(src, test_config.sync_folder / src.name)
+
+
+# ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
@@ -468,11 +497,58 @@ def clean_sorted(test_config: TestConfig):
     test_config.sorted_dir.mkdir(parents=True, exist_ok=True)
 
 
+def _reset_db() -> None:
+    """Truncate the documents table so every test starts with a clean DB."""
+    import subprocess
+    subprocess.run(
+        [
+            "docker", "exec", "integration-mrdocument-db-1",
+            "psql", "-U", "mrdocument", "-d", "mrdocument",
+            "-t", "-A", "-c", "TRUNCATE TABLE mrdocument.documents_v2",
+        ],
+        check=True, capture_output=True, text=True, timeout=10,
+    )
+
+
+@pytest.fixture(autouse=True)
+def reset_environment(test_config: TestConfig):
+    """Reset DB and filesystem before each test case.
+
+    1. Truncate the documents table.
+    2. Clear and recreate all working directories.
+    3. Re-deploy config files into testdata.
+
+    This is autouse so every test starts from a known-clean state without
+    having to restart containers.
+    """
+    _reset_db()
+    for d in (
+        test_config.incoming_dir,
+        test_config.processed_dir,
+        test_config.archive_dir,
+        test_config.reviewed_dir,
+        test_config.sorted_dir,
+        test_config.error_dir,
+        test_config.duplicates_dir,
+        test_config.reset_dir,
+        test_config.trash_dir,
+        test_config.void_dir,
+        test_config.missing_dir,
+        test_config.history_dir,
+        test_config.sync_folder / ".output",
+        test_config.sync_folder / "lost",
+        test_config.costs_dir,
+    ):
+        _clear_directory(d)
+        d.mkdir(parents=True, exist_ok=True)
+    _deploy_configs(test_config)
+    yield
+
+
 # ---------------------------------------------------------------------------
 # Service readiness
 # ---------------------------------------------------------------------------
 
-CONFIG_DIR = INTEGRATION_DIR / "config"
 SERVICE_HEALTH_URL = "http://localhost:8000/health"
 WATCHER_HEALTH_URL = "http://localhost:8080/health"
 SERVICE_READY_TIMEOUT = 60  # seconds
@@ -480,29 +556,12 @@ SERVICE_READY_TIMEOUT = 60  # seconds
 
 @pytest.fixture(scope="session", autouse=True)
 def deploy_config(test_config: TestConfig, clean_all_dirs) -> None:
-    """Deploy sorted/{context}/ configs and root-level configs into the
-    sync folder so the watcher discovers the test user.
+    """Deploy configs once per session (initial setup).
 
-    Runs once per session before any tests.  Depends on *clean_all_dirs*
-    so that the sorted/ directory already exists.
+    Depends on *clean_all_dirs* so that the sorted/ directory already exists.
+    Per-test config deployment is handled by *reset_environment*.
     """
-    if not CONFIG_DIR.is_dir():
-        return
-    test_config.sync_folder.mkdir(parents=True, exist_ok=True)
-    # Deploy sorted/{context}/context.yaml and smartfolders.yaml
-    sorted_config_dir = CONFIG_DIR / "sorted"
-    if sorted_config_dir.is_dir():
-        for ctx_dir in sorted_config_dir.iterdir():
-            if ctx_dir.is_dir():
-                dest_dir = test_config.sorted_dir / ctx_dir.name
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                for src in ctx_dir.iterdir():
-                    if src.suffix in (".yaml", ".yml"):
-                        shutil.copy2(src, dest_dir / src.name)
-    # Deploy root-level configs (config.yaml, stt.yaml)
-    for src in CONFIG_DIR.iterdir():
-        if src.is_file() and src.suffix in (".yaml", ".yml"):
-            shutil.copy2(src, test_config.sync_folder / src.name)
+    _deploy_configs(test_config)
 
 
 @pytest.fixture(scope="session", autouse=True)
