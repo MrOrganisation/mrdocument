@@ -184,14 +184,11 @@ TESTDATA_DIRS := incoming processed archive reviewed sorted duplicates error uns
 define integration_clean
 	@echo "Generating test data..."
 	$(MAKE) -C tests/integration generate
-	@echo "Stopping any existing container..."
-	docker compose -f $(1) down 2>/dev/null || true
+	@echo "Stopping any existing container and removing volumes..."
+	docker compose -f $(1) down -v 2>/dev/null || true
 	docker compose -f $(1) kill 2>/dev/null || true
 	@echo "Cleaning testdata working directories..."
-	@for d in $(TESTDATA_DIRS); do \
-		rm -rf tests/integration/testdata/$$d/* 2>/dev/null; \
-		mkdir -p tests/integration/testdata/$$d; \
-	done
+	rm -rf tests/integration/testdata/* 2>/dev/null
 endef
 
 define integration_logs
@@ -202,16 +199,16 @@ define integration_logs
 	docker cp integration-mrdocument-test-1:/var/log/sorter.log tests/integration/logs/sorter.log 2>/dev/null || true ; \
 	docker cp integration-mrdocument-test-1:/var/log/mrdocument-service.log tests/integration/logs/service.log 2>/dev/null || true ; \
 	docker cp integration-mrdocument-test-1:/var/log/mock-backends.log tests/integration/logs/mock-backends.log 2>/dev/null || true ; \
-	echo "Tearing down container..." ; \
-	docker compose -f $(1) down ; \
+	echo "Tearing down container and removing volumes..." ; \
+	docker compose -f $(1) down -v ; \
 	docker compose -f $(1) kill || true
 endef
 
 test-integration:
 	$(call integration_clean,$(INTEGRATION_COMPOSE))
 	@echo "Building integration test containers..."
-	docker compose -f $(INTEGRATION_COMPOSE) down || true
-	docker compose -f $(INTEGRATION_COMPOSE) kill || true
+	docker compose -f $(INTEGRATION_COMPOSE) down -v
+	docker compose -f $(INTEGRATION_COMPOSE) kill
 	docker compose -f $(INTEGRATION_COMPOSE) build
 	@echo "Starting containers..."
 	docker compose -f $(INTEGRATION_COMPOSE) up -d --force-recreate
