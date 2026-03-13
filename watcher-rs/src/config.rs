@@ -745,14 +745,30 @@ impl SorterContextManager {
                 Ok(contents) => {
                     let data: serde_yaml::Value = match serde_yaml::from_str(&contents) {
                         Ok(d) => d,
-                        Err(_) => continue,
+                        Err(e) => {
+                            warn!(
+                                "[{}] Failed to parse {:?}: {}",
+                                self.username, ctx_yaml, e,
+                            );
+                            continue;
+                        }
                     };
                     if !data.is_mapping() {
+                        warn!(
+                            "[{}] Context config {:?} is not a YAML mapping, skipping",
+                            self.username, ctx_yaml,
+                        );
                         continue;
                     }
                     let context = match ContextConfig::from_dict(&data) {
                         Some(c) => c,
-                        None => continue,
+                        None => {
+                            warn!(
+                                "[{}] Context config {:?} is missing required fields (name, filename), skipping",
+                                self.username, ctx_yaml,
+                            );
+                            continue;
+                        }
                     };
                     let dir_name = ctx_dir
                         .file_name()
@@ -2088,5 +2104,123 @@ folders:
         assert!(re.is_match("condpattern-audio.m4a"), "Should match .m4a");
         assert!(re.is_match("test.mp3"), "Should match .mp3");
         assert!(!re.is_match("document.pdf"), "Should NOT match .pdf");
+    }
+
+    /// Replicates production bug: context "ga" uses double-quoted match regex
+    /// in its conditional filename. In YAML double-quoted strings, `\.` is an
+    /// invalid escape sequence, causing the entire document to fail parsing.
+    /// The context is then silently skipped by load_from_sorted, so
+    /// context_folders never contains "ga" and subfolder field locking breaks.
+    #[test]
+    fn test_prod_config_double_quoted_regex_fails_to_parse() {
+        // This is the exact YAML structure from the production "ga" config.
+        // Note: match uses double quotes — `\.` is an invalid YAML escape.
+        let yaml_str = r#"
+name: ga
+description: Gutachten-Dokumente
+filename:
+  - match: ".*\.(mp4|mov|wav|m4a)$"
+    pattern: '{context}-{date}-{case}-{sender}-{type}-{keywords}-{source_filename}'
+  - pattern: '{context}-{date}-{case}-{sender}-{type}-{keywords}'
+folders:
+  - context
+  - case
+fields:
+  type:
+    instructions: Identify the document type.
+    candidates:
+      - Beschluss
+      - name: Diktat
+        clues:
+          - Transkript mit timestamps ohne speaker labels
+  sender:
+    instructions: Der Absender.
+    candidates:
+      - name: Heike Frerich
+        short: HF
+  case:
+    instructions: Der Nachname des Kindes.
+    candidates:
+      - name: schmidt
+        clues:
+          - Kind Leopold Schmidt
+  keywords:
+    instructions: Bis zu vier Stichworte.
+"#;
+
+        // The double-quoted `\.` must cause a YAML parse error.
+        let result = serde_yaml::from_str::<serde_yaml::Value>(yaml_str);
+        assert!(
+            result.is_err(),
+            "Double-quoted regex with `\\.` should fail YAML parsing, but got: {:?}",
+            result.unwrap(),
+        );
+
+        // With single quotes the same regex parses fine.
+        let fixed_yaml = yaml_str.replace(
+            r#"match: ".*\.(mp4|mov|wav|m4a)$""#,
+            r"match: '.*\\.(mp4|mov|wav|m4a)$'",
+        );
+        let data: serde_yaml::Value = serde_yaml::from_str(&fixed_yaml)
+            .expect("Single-quoted regex should parse");
+        let ctx = ContextConfig::from_dict(&data)
+            .expect("Config with single-quoted regex should load");
+        assert_eq!(ctx.name, "ga");
+        assert_eq!(ctx.folders, vec!["context", "case"]);
+        assert_eq!(ctx.filename_rules.len(), 2);
+    }
+
+    /// End-to-end: when a context config fails to parse (e.g. bad YAML escape),
+    /// load_from_sorted skips it silently. Without the context in the map,
+    /// subfolder field locking never fires — replicating the production bug
+    /// where files in sorted/ga/schmidt/ lose their "case" lock.
+    #[test]
+    fn test_load_from_sorted_skips_unparseable_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+
+        // Create two contexts: "good" (parses) and "ga" (fails to parse).
+        let good_dir = root.join("sorted/good");
+        std::fs::create_dir_all(&good_dir).unwrap();
+        std::fs::write(
+            good_dir.join("context.yaml"),
+            "name: good\nfilename: '{context}-{date}'\nfolders:\n  - context\n",
+        )
+        .unwrap();
+
+        let ga_dir = root.join("sorted/ga");
+        std::fs::create_dir_all(&ga_dir).unwrap();
+        // Production-style config with double-quoted regex — invalid YAML escape
+        std::fs::write(
+            ga_dir.join("context.yaml"),
+            concat!(
+                "name: ga\n",
+                "filename:\n",
+                "  - match: \".*\\.(mp4|mov|wav|m4a)$\"\n",
+                "    pattern: '{context}-{date}-{case}'\n",
+                "  - pattern: '{context}-{date}'\n",
+                "folders:\n",
+                "  - context\n",
+                "  - case\n",
+                "fields:\n",
+                "  case:\n",
+                "    instructions: test\n",
+            ),
+        )
+        .unwrap();
+
+        let mut mgr = SorterContextManager::new(root, "testuser");
+        mgr.load();
+
+        // "good" loads, "ga" is silently skipped.
+        assert!(
+            mgr.contexts.contains_key("good"),
+            "good context should be loaded",
+        );
+        assert!(
+            !mgr.contexts.contains_key("ga"),
+            "ga context should NOT be loaded (YAML parse fails on double-quoted regex), \
+             but it was loaded — meaning the bug is not reproducible with this YAML version",
+        );
     }
 }
