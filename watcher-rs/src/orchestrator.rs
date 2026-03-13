@@ -530,7 +530,7 @@ impl DocumentWatcherV2 {
         let t_snapshot = Instant::now();
 
         // 2. Detect filesystem changes
-        let changes = self.detector.detect(&snapshot).await;
+        let changes = self.detector.detect(&snapshot, full_scan).await;
         let t_detect = Instant::now();
 
         // Check if config files changed (triggers reload + full scan)

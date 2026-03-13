@@ -624,6 +624,14 @@ async fn run_watcher(
     }
 
     let result: Result<(), anyhow::Error> = async {
+        // Initialise config-derived state (recompute_filename, context fields,
+        // smart folders, …) before the first cycle so that reset processing
+        // and context resolution work from the very start.
+        watcher.reload_config(
+            &|cm| load_smart_folders(cm),
+            &|root| load_root_smart_folders(root),
+        );
+
         // First cycle is always a full scan.
         let mut had_activity = watcher.run_cycle(true).await?;
         let mut last_full = tokio::time::Instant::now();

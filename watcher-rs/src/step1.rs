@@ -416,13 +416,72 @@ impl FilesystemDetector {
     /// Detect filesystem changes.
     ///
     /// First call: full scan + start inotify observer.
-    /// Subsequent calls: process only inotify events.
-    pub async fn detect(&mut self, db_snapshot: &[Record]) -> Vec<ChangeItem> {
+    /// Subsequent calls: process inotify events.  When `full_scan` is true
+    /// **and** the observer is already running, a filesystem scan is performed
+    /// first so that files missed by inotify (e.g. due to Docker bind-mount
+    /// event delivery gaps) are still picked up.
+    pub async fn detect(&mut self, db_snapshot: &[Record], full_scan: bool) -> Vec<ChangeItem> {
         self.check_root_smartfolders_yaml();
         if self.watcher.is_none() {
             self.detect_full(db_snapshot)
         } else {
+            if full_scan {
+                self.inject_full_scan_paths();
+            }
             self.detect_incremental(db_snapshot)
+        }
+    }
+
+    /// Scan all watched directories and inject paths for files not already
+    /// tracked in `previous_state` into `changed_paths`, so that the next
+    /// `detect_incremental` picks them up.
+    fn inject_full_scan_paths(&self) {
+        let mut injected = 0usize;
+        let mut set = self.changed_paths.lock().unwrap();
+
+        for dirname in DIRECT_DIRS {
+            let dirpath = self.root.join(dirname);
+            if !dirpath.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(&dirpath) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_file() || path.is_symlink() {
+                        continue;
+                    }
+                    if let Ok(rel) = path.strip_prefix(&self.root) {
+                        let rel_str = rel.to_string_lossy().to_string();
+                        if !self.previous_state.contains_key(&rel_str) {
+                            set.insert(rel_str);
+                            injected += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        for dirname in RECURSIVE_DIRS {
+            let dirpath = self.root.join(dirname);
+            if !dirpath.is_dir() {
+                continue;
+            }
+            for file in walk_recursive(&dirpath) {
+                if !file.is_file() || file.is_symlink() {
+                    continue;
+                }
+                if let Ok(rel) = file.strip_prefix(&self.root) {
+                    let rel_str = rel.to_string_lossy().to_string();
+                    if !self.previous_state.contains_key(&rel_str) {
+                        set.insert(rel_str);
+                        injected += 1;
+                    }
+                }
+            }
+        }
+
+        if injected > 0 {
+            info!("inject_full_scan_paths: {} new paths injected", injected);
         }
     }
 
@@ -1209,7 +1268,7 @@ mod tests {
         fs::write(root.join("incoming/b.pdf"), b"bbb").unwrap();
 
         let mut detector = FilesystemDetector::new(root.to_path_buf());
-        let changes = detector.detect(&[]).await;
+        let changes = detector.detect(&[], false).await;
 
         // Both files should be reported as additions
         let additions: Vec<_> = changes
@@ -1251,7 +1310,7 @@ mod tests {
         );
 
         let mut detector = FilesystemDetector::new(root.to_path_buf());
-        let changes = detector.detect(&[record]).await;
+        let changes = detector.detect(&[record], false).await;
 
         // The known file should NOT be re-reported as addition
         let additions: Vec<_> = changes
@@ -1280,7 +1339,7 @@ mod tests {
         );
 
         let mut detector = FilesystemDetector::new(root.to_path_buf());
-        let changes = detector.detect(&[record]).await;
+        let changes = detector.detect(&[record], false).await;
 
         let removals: Vec<_> = changes
             .iter()
@@ -1368,6 +1427,115 @@ mod tests {
             "incoming/unknown.pdf",
             &index
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // inject_full_scan_paths tests
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_detect_full_scan_injects_missed_files() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        // Place one file before the initial scan.
+        fs::write(root.join("incoming/existing.pdf"), b"existing").unwrap();
+
+        let mut detector = FilesystemDetector::new(root.to_path_buf());
+
+        // First detect: full scan — starts the inotify observer and populates
+        // previous_state with "incoming/existing.pdf".
+        let changes = detector.detect(&[], false).await;
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].path, "incoming/existing.pdf");
+
+        // Simulate a file that appeared while inotify missed it (e.g. Docker
+        // bind-mount gap).  Write directly — no inotify event is generated
+        // because the watcher only watches for a short window and we write
+        // immediately after draining.
+        fs::write(root.join("incoming/missed.pdf"), b"missed").unwrap();
+
+        // Incremental detect WITHOUT full_scan — the missed file should NOT
+        // appear because there is no inotify event for it.
+        let changes = detector.detect(&[], false).await;
+        let missed: Vec<_> = changes
+            .iter()
+            .filter(|c| c.path == "incoming/missed.pdf")
+            .collect();
+        // The file may or may not show up via inotify depending on timing;
+        // what we really care about is the full_scan=true path below.
+
+        // Incremental detect WITH full_scan=true — inject_full_scan_paths
+        // should inject the missed file so it gets picked up.
+        let changes = detector.detect(&[], true).await;
+        let additions: Vec<_> = changes
+            .iter()
+            .filter(|c| c.path == "incoming/missed.pdf" && c.event_type == EventType::Addition)
+            .collect();
+        assert!(
+            !additions.is_empty() || missed.len() == 1,
+            "missed.pdf should be detected via full_scan injection \
+             (or was already picked up via inotify)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_full_scan_does_not_reinject_known_files() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        fs::write(root.join("incoming/only.pdf"), b"content").unwrap();
+
+        let mut detector = FilesystemDetector::new(root.to_path_buf());
+
+        // Initial full scan — populates previous_state.
+        let changes = detector.detect(&[], false).await;
+        assert_eq!(changes.len(), 1);
+
+        // Second call with full_scan=true — the already-known file should NOT
+        // be injected again (it is in previous_state).
+        let changes = detector.detect(&[], true).await;
+        let additions: Vec<_> = changes
+            .iter()
+            .filter(|c| c.event_type == EventType::Addition)
+            .collect();
+        assert!(
+            additions.is_empty(),
+            "known files should not be re-reported after full_scan injection"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_full_scan_injects_recursive_dir_files() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+        setup_dirs(root);
+
+        let mut detector = FilesystemDetector::new(root.to_path_buf());
+
+        // Initial full scan with empty filesystem.
+        let changes = detector.detect(&[], false).await;
+        assert!(changes.is_empty());
+
+        // Add a file deep in the recursive "sorted" tree.
+        fs::create_dir_all(root.join("sorted/project")).unwrap();
+        fs::write(root.join("sorted/project/deep.pdf"), b"deep").unwrap();
+
+        // full_scan=true should inject it.
+        let changes = detector.detect(&[], true).await;
+        let deep: Vec<_> = changes
+            .iter()
+            .filter(|c| {
+                c.path == "sorted/project/deep.pdf"
+                    && c.event_type == EventType::Addition
+            })
+            .collect();
+        assert!(
+            !deep.is_empty(),
+            "file in recursive dir should be injected by full_scan"
+        );
     }
 
     #[test]
