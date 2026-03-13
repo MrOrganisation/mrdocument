@@ -3361,6 +3361,15 @@ mod tests {
     /// the folder-derived context and stays in its directory.
     #[test]
     fn test_sorted_audio_context_locked_ai_disagrees() {
+        // folders config: privat → ["context", "type"]
+        // File at sorted/privat/Arztbrief/ → context="privat", type="Arztbrief" (both locked)
+        let context_folders: HashMap<String, Vec<String>> = [(
+            "privat".to_string(),
+            vec!["context".to_string(), "type".to_string()],
+        )]
+        .into_iter()
+        .collect();
+
         // 1. Detect the audio file in sorted/privat/Arztbrief/
         let mut records: Vec<Record> = Vec::new();
         let mut new_records: Vec<Record> = Vec::new();
@@ -3372,7 +3381,7 @@ mod tests {
         );
 
         let (_modified_ids, created) =
-            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
+            preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, Some(&context_folders));
 
         assert_eq!(created.len(), 1);
         let record = &created[0];
@@ -3380,6 +3389,13 @@ mod tests {
         assert_eq!(record.context.as_deref(), Some("privat"));
         assert_eq!(record.original_filename, "audio-memo.m4a");
         assert_eq!(record.state, State::IsNew);
+        // Subfolder field "type" is extracted into metadata at creation time
+        let meta = record.metadata.as_ref().expect("metadata should be set from subfolder");
+        assert_eq!(
+            meta.get("type").and_then(|v| v.as_str()),
+            Some("Arztbrief"),
+            "type must be extracted from subfolder at creation time"
+        );
 
         // 2. Reconcile: IsNew → NeedsProcessing (assigns output_filename)
         let mut all_records = created;
@@ -3419,7 +3435,7 @@ mod tests {
             &mut all_records,
             &mut Vec::new(),
             sidecar_fn,
-            None,
+            Some(&context_folders),
         );
 
         assert!(!modified_ids.is_empty());
@@ -3433,23 +3449,30 @@ mod tests {
             "Context must remain locked to folder, not AI's classification"
         );
 
-        // Metadata fields from AI are still adopted (type, sender, date)
+        // Subfolder-locked field "type" must keep folder value "Arztbrief",
+        // NOT the AI's "Rechnung". Non-locked fields from AI are adopted.
         let meta = r.metadata.as_ref().unwrap();
-        assert_eq!(meta.get("type").unwrap().as_str(), Some("Rechnung"));
-        assert_eq!(meta.get("sender").unwrap().as_str(), Some("Schulze GmbH"));
+        assert_eq!(
+            meta.get("type").unwrap().as_str(),
+            Some("Arztbrief"),
+            "type must remain locked to subfolder value, not AI's classification"
+        );
+        assert_eq!(
+            meta.get("sender").unwrap().as_str(),
+            Some("Schulze GmbH"),
+            "sender (not locked) should be adopted from AI"
+        );
+        assert_eq!(
+            meta.get("date").unwrap().as_str(),
+            Some("2025-08-15"),
+            "date (not locked) should be adopted from AI"
+        );
 
         // assigned_filename comes from AI (service used its pattern)
         assert!(r.assigned_filename.is_some());
         assert!(r.output_filename.is_none()); // cleared after ingestion
 
         // 4. Reconcile: .output → sorted/ target path using locked context
-        let context_folders: HashMap<String, Vec<String>> = [(
-            "privat".to_string(),
-            vec!["context".to_string(), "type".to_string()],
-        )]
-        .into_iter()
-        .collect();
-
         let result = reconcile(
             &mut all_records[0],
             None,
@@ -3482,6 +3505,13 @@ mod tests {
         assert!(
             !target.starts_with("sorted/arbeit/"),
             "Target path must NOT use AI-classified context 'arbeit', got: {}",
+            target,
+        );
+
+        // Target path uses locked type subfolder "Arztbrief", not AI's "Rechnung"
+        assert!(
+            target.contains("/Arztbrief/"),
+            "Target path should contain /Arztbrief/ (locked type subfolder), got: {}",
             target,
         );
     }

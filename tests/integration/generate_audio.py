@@ -156,6 +156,21 @@ AUDIO_FILES = {
             "dritten August mitbringen und vorher nichts essen."
         ),
     },
+    "subfolder-locked-audio": {
+        "context": "arbeit",
+        "date": "2025-11-05",
+        "intro_position": None,
+        "intro_text": None,
+        "format": "m4a",
+        "body_text": (
+            "Guten Tag, hier spricht Thomas Berger von der Schulze GmbH. "
+            "Ich moechte die Besprechungsergebnisse vom fuenften November "
+            "zweitausendundfuenfundzwanzig festhalten. Wir haben den "
+            "Wartungsvertrag fuer die Serverinfrastruktur besprochen. "
+            "Die jaehrliche Wartungspauschale betraegt sechstausend Euro. "
+            "Bitte senden Sie uns die Rechnung an die bekannte Adresse."
+        ),
+    },
 }
 
 

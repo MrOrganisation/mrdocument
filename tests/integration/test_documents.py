@@ -971,6 +971,16 @@ SUBFOLDER_LOCKED_DOCS = [
         "date": "2025-01-15",
         "out_ext": "pdf",
     },
+    {
+        "id": "sender_locked_audio_arbeit",
+        "file_stem": "subfolder-locked-audio",
+        "fmt": "m4a",
+        "folder_context": "arbeit",
+        "subfolder": "Fischer AG",
+        "locked_field": "sender",
+        "date": "2025-11-05",
+        "out_ext": "txt",
+    },
 ]
 
 
