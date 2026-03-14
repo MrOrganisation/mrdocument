@@ -1,0 +1,29 @@
+name: arbeit
+description: "Business documents: invoices, contracts, and proposals"
+
+filename: "{context}-{type}-{date}-{sender}"
+audio_filename: "{context}-{date}-{sender}-{type}"
+
+fields:
+  type:
+    instructions: "Determine the document type based on content."
+    candidates:
+      - "Rechnung"
+      - "Vertrag"
+      - "Angebot"
+    allow_new_candidates: false
+
+  sender:
+    instructions: "Determine the sender or organization."
+    candidates:
+      - "Schulze GmbH"
+      - "Fischer AG"
+    allow_new_candidates: true
+
+filename_keywords:
+  - "schulze"
+  - "keller"
+
+folders:
+  - "context"
+  - "sender"

@@ -37,6 +37,7 @@ Each user root contains the following directories:
 | `void/` | Deleted/orphaned files. Not watched. |
 | `duplicates/` | Duplicate source files, maintaining path tree. Not watched. |
 | `missing/` | Source files whose processed result is missing. Flat. |
+| `reset/` | Place a processed file here to trigger filename recomputation. Watched. |
 | `trash/` | User-initiated deletion. Watched for deletion triggers. |
 
 ### Configuration Files
@@ -216,7 +217,7 @@ Business logic is organized into steps. Steps 1, 2, and 4 run sequentially in a 
 
 This step detects filesystem changes and filters out stray files.
 
-- Step 1 considers all files directly in: `archive`, `incoming`, `reviewed`, `processed`, `trash`, `.output`.
+- Step 1 considers all files directly in: `archive`, `incoming`, `reviewed`, `processed`, `reset`, `trash`, `.output`.
 - Step 1 considers all files recursively in `sorted`.
 - It scans all files on startup and watches all directories for changes via inotify.
 
@@ -254,6 +255,7 @@ Preprocessing applies the change list to the DB, updating `source_paths` and `cu
 | `sorted` | `hash` first, then `source_hash` | Yes |
 | `archive`, `missing` | `source_hash` only | No |
 | `processed`, `reviewed` | `hash` only | No |
+| `reset` | `hash` only | No |
 | `trash` | `source_hash` or `hash` | No |
 | `.output` | `output_filename` only | No |
 
@@ -308,6 +310,7 @@ Reconciliation runs on every entry modified by preprocessing. It first **clears 
 - Single `.output` path: Compute `target_path`, set `current_reference`.
 - Single `processed` path: Set to `is_complete`.
 - Single `reviewed` path: Compute `target_path`, set `current_reference`.
+- Single `reset` path: Optionally recompute `assigned_filename`. Compute `target_path` to `sorted/`. Set `current_reference`. Deduplicate: if multiple entries in `current_paths`, keep most recent and move older entries to `deleted_paths`. Set to `is_complete`.
 - Single `sorted` path: Adopt user changes (rename, context change), check metadata completeness. If path matches expected: `is_complete`. If not: set `current_reference` and `target_path`.
 
 ### Step 3: Process

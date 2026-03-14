@@ -26,6 +26,7 @@ mrdocument/
   reviewed/       <-- Freigegebene Dateien, warten auf Einsortierung
   sorted/         <-- Endablage, nach Kontext organisiert
   archive/        <-- Originaldateien (dauerhafte Aufbewahrung)
+  reset/          <-- Verarbeitete Dateien hier ablegen zum Neu-Einsortieren
   error/          <-- Dateien, deren Verarbeitung fehlgeschlagen ist
   duplicates/     <-- Duplikate von Quelldateien
   trash/          <-- Dateien hier ablegen zum Loeschen
@@ -66,8 +67,19 @@ Sie koennen den Ueberpruefungsschritt ueberspringen, indem Sie Dateien direkt in
 | `sorted/` | Organisierte Dateien durchsuchen; Dateien zum Schnellsortieren ablegen | Klassifiziert und benennt um; verwaltet Smart-Folder-Links. |
 | `archive/` | Nur-Lese-Referenz | Speichert alle Originaldateien dauerhaft. |
 | `trash/` | Dateien hier ablegen zum Loeschen | Verschiebt alle zugehoerigen Dateien nach `void/` und entfernt den Datensatz. |
+| `reset/` | Verarbeitete Dateien hier ablegen | Loest Neuberechnung des Dateinamens und Neu-Einsortierung in `sorted/` aus. |
 | `error/` | Fehlgeschlagene Dateien pruefen | Nicht verarbeitbare Dateien landen hier. Zurueck nach `incoming/` verschieben zum Wiederholen. |
 | `duplicates/` | Duplikate pruefen | Wenn dieselbe Quelldatei mehrfach erscheint, kommen Kopien hierhin. |
+
+### Zuruecksetzen (Datei neu einsortieren)
+
+Wenn Sie moechten, dass MrDocument den Dateinamen neu berechnet und eine Datei neu einsortiert:
+
+1. Kopieren Sie die Datei von `processed/` nach `reset/`.
+2. MrDocument berechnet den Dateinamen anhand der aktuellen Metadaten und Kontext-Konfiguration neu.
+3. Die Datei wird von `reset/` an den richtigen Ort unter `sorted/` verschoben.
+
+Dies ist nuetzlich nach Aenderungen an der Kontext-Konfiguration (z.B. neue Felder oder Namensmuster) -- Sie koennen Dateien zuruecksetzen, um aktualisierte Dateinamen zu erhalten, ohne sie erneut durch die KI verarbeiten zu lassen.
 
 ### Umbenennung und Wiederherstellung
 

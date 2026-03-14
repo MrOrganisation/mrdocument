@@ -26,6 +26,7 @@ mrdocument/
   reviewed/       <-- Files you've approved, awaiting sorting
   sorted/         <-- Final destination, organized by context
   archive/        <-- Original source files (permanent storage)
+  reset/          <-- Drop processed files here to re-sort them
   error/          <-- Files that failed processing
   duplicates/     <-- Duplicate copies of source files
   trash/          <-- Drop files here to delete them
@@ -66,8 +67,19 @@ You can bypass the review step by dropping files directly into `sorted/`:
 | `sorted/` | Browse your organized files; drop files for quick sort | Classifies and renames in-place; manages smart folder links. |
 | `archive/` | Read-only reference | Stores all original source files permanently. |
 | `trash/` | Move files here to delete | Moves all associated files to `void/` and removes the record. |
+| `reset/` | Drop processed files here | Triggers filename recomputation and re-sorting into `sorted/`. |
 | `error/` | Check failed files | Files that couldn't be processed end up here. You can move them back to `incoming/` to retry. |
 | `duplicates/` | Check for duplicates | When the same source file appears multiple times, extras go here. |
+
+### Reset (Re-Sort a File)
+
+If you want MrDocument to recompute the filename and re-sort a file:
+
+1. Copy the file from `processed/` to `reset/`.
+2. MrDocument recomputes the filename using current metadata and context config.
+3. The file is moved from `reset/` to the correct location under `sorted/`.
+
+This is useful after changing your context configuration (e.g., adding new fields or renaming patterns) -- you can reset files to get updated filenames without reprocessing them through the AI.
 
 ### File Rename and Recovery
 

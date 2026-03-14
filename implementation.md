@@ -106,7 +106,7 @@ Called when config files change. Reloads context manager, rebuilds field names/f
 
 ### Watched Directories
 
-- **Direct (non-recursive)**: `archive`, `incoming`, `reviewed`, `processed`, `trash`, `.output`
+- **Direct (non-recursive)**: `archive`, `incoming`, `reviewed`, `processed`, `reset`, `trash`, `.output`
 - **Recursive**: `sorted`
 
 ### detect(db_snapshot)

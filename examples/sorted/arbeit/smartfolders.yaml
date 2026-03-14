@@ -1,0 +1,15 @@
+smart_folders:
+  rechnungen:
+    condition:
+      field: "type"
+      value: "Rechnung"
+
+  keller_rechnungen:
+    condition:
+      operator: "and"
+      operands:
+        - field: "type"
+          value: "Rechnung"
+        - field: "sender"
+          value: "Keller.*"
+    filename_regex: "2025"

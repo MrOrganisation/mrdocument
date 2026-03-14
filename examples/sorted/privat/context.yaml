@@ -1,0 +1,25 @@
+name: privat
+description: "Personal documents: medical letters, insurance, bank statements"
+
+filename: "{context}-{type}-{date}-{sender}"
+
+fields:
+  type:
+    instructions: "Determine the document type based on content."
+    candidates:
+      - "Arztbrief"
+      - "Versicherung"
+      - "Kontoauszug"
+    allow_new_candidates: false
+
+  sender:
+    instructions: "Determine the sender or organization."
+    candidates:
+      - "Dr. Braun"
+      - "Allianz"
+      - "Sparkasse"
+    allow_new_candidates: true
+
+folders:
+  - "context"
+  - "type"

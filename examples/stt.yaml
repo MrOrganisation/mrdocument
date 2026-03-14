@@ -1,0 +1,4 @@
+language: "de-DE"
+elevenlabs_model: "scribe_v2"
+enable_diarization: true
+diarization_speaker_count: 2

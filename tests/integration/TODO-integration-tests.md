@@ -7,7 +7,7 @@ Each test interacts only through the filesystem and Docker container lifecycle.
 
 - [x] File added to incoming/ with same content as an already-processed file
       -> moved to duplicates/, not reprocessed
-      (TestDuplicateIncoming in test_lifecycle.py)
+      (duplicate_incoming.yaml)
 - [x] File added to sorted/ with same content as an already-processed file
       -> moved to duplicates/
       (TestDuplicateSorted in test_lifecycle.py)
@@ -21,17 +21,17 @@ Each test interacts only through the filesystem and Docker container lifecycle.
 
 - [x] Service returns error (e.g. corrupt/empty PDF)
       -> source moved to error/, 0-byte output cleaned up
-      (TestErrorHandlingAndRecovery phase 1 in test_lifecycle.py;
+      (error_handling_recovery.yaml phase 1;
       mock_ocr.py returns 500 for empty files)
 - [x] File previously in error/ resubmitted via incoming/ with new content
       -> processed successfully (recovery)
-      (TestErrorHandlingAndRecovery phase 2 in test_lifecycle.py)
+      (error_handling_recovery.yaml phase 2)
 
 ## Missing File Detection
 
 - [x] Processed file deleted from sorted/ by user
       -> record detects missing state (file disappears from sorted/)
-      (TestMissingFileDetection in test_lifecycle.py)
+      (missing_file_detection.yaml)
 - [x] Processed file deleted from sorted/, then same file re-added
       -> record recovers to complete state
       (TestMissingFileRecovery in test_lifecycle.py)
@@ -40,16 +40,16 @@ Each test interacts only through the filesystem and Docker container lifecycle.
 
 - [x] File moved to trash/ by user
       -> all associated files (archive, sorted, symlinks) cleaned up to void/
-      (TestTrashDeletion in test_lifecycle.py)
+      (trash_deletion.yaml)
 
 ## Stray File Handling
 
 - [x] Unknown file placed directly in archive/
       -> moved to error/
-      (TestStrayArchive in test_lifecycle.py)
+      (stray_archive.yaml)
 - [x] Unknown file placed in incoming/
       -> processed normally (not treated as stray)
-      (TestStrayIncoming in test_lifecycle.py)
+      (stray_incoming.yaml)
 
 ## Sorted Directory User Interactions
 

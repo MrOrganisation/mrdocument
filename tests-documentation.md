@@ -219,9 +219,13 @@ Integration tests run against a real Docker stack. The mrdocument-service is **n
 - `clean_all_dirs` (session, autouse) -- Clears all directories at session start.
 - `clean_working_dirs` (function) -- Clears transient dirs before a test.
 - `clean_sorted` (function) -- Clears sorted/ explicitly.
+- `reset_environment` (function, autouse) -- Truncates DB, clears all working directories, re-deploys configs before each test.
 - `deploy_config` (session, autouse) -- Deploys test configs to sync folder.
 - `ensure_service_ready` (session, autouse) -- Polls `/health` until 200.
 - `ensure_syncthing_synced` (session, autouse) -- Waits for Syncthing sync (if enabled).
+
+**YAML Fixture Collection:**
+- `pytest_collect_file()` -- Collects `.yaml` files in `fixture_tests/` as pytest test items via `YamlFixtureFile`.
 
 **Helpers:**
 - `atomic_copy(src, dest)` -- Temp file + rename (mirrors Syncthing delivery).
@@ -233,17 +237,79 @@ Integration tests run against a real Docker stack. The mrdocument-service is **n
 - `verify_audio_link_symlink()` / `poll_for_audio_link_symlink()` -- Audio link verification.
 - `verify_intro_in_text(text, key_phrases)` -- Fuzzy intro text matching (>=60% word overlap).
 
-### test_documents.py -- Document Pipeline
+### YAML Fixture Tests (`fixture_tests/`)
 
-Each `(file_stem, format)` pair is unique across all tests to avoid DB deduplication.
+Most integration tests are declarative YAML fixtures. Each `.yaml` file defines a multi-step test with filesystem actions and expected tree assertions.
+
+**Framework** (`fixtures/` package):
+- `loader.py` -- Parses YAML fixtures. Supports `copy`, `move`, `delete`, `copy_match` input actions. Template expansion (e.g., `{CURRENT_DATE}`). Timeout parsing (`10s`, `2m`, or numeric).
+- `scanner.py` -- Scans the sync folder tree (excludes hidden files, symlinks, YAML configs). Regex matching: each expected pattern must match >= 1 file, each file must match >= 1 pattern. Patterns prefixed with `~` are optional (absorb matching files but don't fail if absent).
+- `runner.py` -- Executes fixture steps: performs input actions, then polls the filesystem tree until all expected patterns match or timeout expires. Produces detailed mismatch reports on failure.
+
+**YAML fixture format:**
+```yaml
+contexts:
+  - arbeit
+files:
+  - filename: example.pdf
+    path_of_generated_file: generated/example.pdf  # or content: "inline text"
+timeout: 300s  # default: 10s
+steps:
+  - input:
+      - incoming/example.pdf                        # copy file to path
+      - move: 'processed/arbeit-.*\.pdf'             # move matching file
+        to: 'reviewed/'
+      - delete: 'sorted/.*\.pdf'                     # delete matching file
+      - copy_match: 'processed/arbeit-.*\.pdf'        # copy matching file
+        to: 'reset/'
+    expected:
+      - 'archive/example\.pdf'                       # regex patterns
+      - 'sorted/arbeit/.*/arbeit-.*\.pdf'
+      - '~void/.*/processed/arbeit-.*\.pdf'          # ~ prefix = optional
+```
+
+**Fixture test files (37 total):**
+
+| Category | Files | Description |
+|----------|-------|-------------|
+| Incoming pipeline | 6 (`incoming_{context}_{fmt}.yaml`) | Full pipeline: incoming/ -> processed/ -> reviewed/ -> sorted/. 2 contexts x 3 formats. |
+| Sorted correct context | 6 (`sorted_correct_{context}_{fmt}.yaml`) | File placed in sorted/{correct_context}/. Verifies rename, archive, path structure. |
+| Sorted wrong context | 6 (`sorted_wrong_{ctx}_to_{ctx}_{fmt}.yaml`) | File placed in sorted/{wrong_context}/. Verifies context preserved, filename adapted. |
+| Sorted AI disagrees | 3 (`sorted_ai_disagrees_{fmt}.yaml`) | File in sorted/ where AI suggests different context. Verifies user placement is respected. |
+| Subfolder field locking | 4 (`subfolder_locked_*.yaml`) | File in sorted/{context}/{subfolder}/. Verifies subfolder-derived fields are locked. |
+| Reset pipeline | 3 (`reset_{context}_{fmt}.yaml`) | Copy processed file to reset/ -> filename recomputed and file re-sorted into sorted/. |
+| Duplicate incoming | 1 | Same file submitted twice to incoming/ -> second copy to duplicates/. |
+| Trash deletion | 1 | File processed -> sorted -> moved to trash/ -> all associated files to void/. |
+| Missing file detection | 1 | File processed -> sorted -> deleted from sorted/ -> archive moved to missing/. |
+| Error handling recovery | 1 | Empty PDF -> error/. Valid text file -> processed normally alongside error. |
+| Stray files | 2 (`stray_archive.yaml`, `stray_incoming.yaml`) | Unknown files in archive/ -> error/. Unknown files in incoming/ -> processed normally. |
+| Unsupported prefilter | 1 | `.ttf`, `.otf`, `.numbers`, `.tex` files moved to error/. |
+| Conditional filename | 1 | Audio file with AI-disagreed context uses conditional filename pattern. |
+
+### test_documents.py -- Document Pipeline (Python)
+
+Tests remaining as Python because they require specific assertions not expressible in YAML.
 
 | Class | Tests | Description |
 |-------|-------|-------------|
-| `TestIncomingPipeline` | 6 (2 contexts x 3 formats) | Full pipeline: incoming/ -> processed/ -> reviewed/ -> sorted/. Verifies filename components, keywords, archive copy, smart folder symlinks. |
-| `TestSortedCorrectContext` | 6 (2 contexts x 3 formats) | File placed in sorted/{correct_context}/. Verifies rename, archive, path structure. |
-| `TestSortedWrongContext` | 6 (2 contexts x 3 formats) | File placed in sorted/{wrong_context}/. Verifies context preserved, filename adapted. |
 | `TestFilenameKeywords` | 4 | Filename keywords from context config present/absent in output filenames. |
-| `TestUnsupportedFilePrefilter` | 1 | `.ttf`, `.otf`, `.numbers`, `.tex` files moved to error/. |
+| `TestWatcherRestart` | 1 | In-flight document completes after watcher container restart. |
+
+### test_lifecycle.py -- Document Lifecycle (Python)
+
+Tests remaining as Python because they require DB queries, watcher restarts, symlink assertions, or content verification.
+
+| Class | Tests | Description |
+|-------|-------|-------------|
+| `TestDuplicateSorted` | 1 | Original source file added to sorted/ after processing -> moved to duplicates/ (source_hash match). |
+| `TestMissingFileRecovery` | 1 | Processed file deleted from sorted/, then re-added via incoming/ -> record recovers to complete state. |
+| `TestTrashFromSorted` | 1 | File processed through sorted/, then source copy placed in trash/ -> archive and sorted output cleaned up. |
+| `TestUserRenameInSorted` | 1 | User renames file in sorted/ -> record adopts new filename. |
+| `TestUserMoveContext` | 1 | User moves file from sorted/arbeit/ to sorted/privat/ -> record updates context. |
+| `TestSmartFolderRemovalOnMove` | 1 | Smart folder symlink removed when file re-sorted to different context. |
+| `TestBrokenSmartFolderCleanup` | 1 | Smart folder symlink cleaned up after source file trashed. |
+| `TestContentHashBackfill` | 1 | Content hashes NULLed in DB, watcher restarted -> hashes backfilled from files on disk. |
+| `TestMigrationDedup` | 2 | Old DB without content hashes: sorted/ record beats processed/ records; most recent wins when all in sorted/. |
 
 ### test_audio.py -- Audio/STT Pipeline
 

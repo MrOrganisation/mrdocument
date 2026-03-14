@@ -1,0 +1,14 @@
+smart_folders:
+  - name: invoices
+    context: arbeit
+    path: /home/user/Desktop/Invoices
+    condition:
+      field: "type"
+      value: "Rechnung"
+
+  - name: medical
+    context: privat
+    path: ./medical_docs
+    condition:
+      field: "type"
+      value: "Arztbrief"
