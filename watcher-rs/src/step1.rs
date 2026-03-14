@@ -439,6 +439,23 @@ impl FilesystemDetector {
         let mut injected = 0usize;
         let mut set = self.changed_paths.lock().unwrap();
 
+        let should_inject = |path: &Path, rel_str: &str| -> bool {
+            let filename = match path.file_name().and_then(|n| n.to_str()) {
+                Some(name) => name,
+                None => return false,
+            };
+            if is_ignored(filename) {
+                return false;
+            }
+            if !has_supported_extension(path) {
+                return false;
+            }
+            if is_config_file(rel_str) {
+                return false;
+            }
+            true
+        };
+
         for dirname in DIRECT_DIRS {
             let dirpath = self.root.join(dirname);
             if !dirpath.is_dir() {
@@ -452,7 +469,9 @@ impl FilesystemDetector {
                     }
                     if let Ok(rel) = path.strip_prefix(&self.root) {
                         let rel_str = rel.to_string_lossy().to_string();
-                        if !self.previous_state.contains_key(&rel_str) {
+                        if should_inject(&path, &rel_str)
+                            && !self.previous_state.contains_key(&rel_str)
+                        {
                             set.insert(rel_str);
                             injected += 1;
                         }
@@ -472,7 +491,9 @@ impl FilesystemDetector {
                 }
                 if let Ok(rel) = file.strip_prefix(&self.root) {
                     let rel_str = rel.to_string_lossy().to_string();
-                    if !self.previous_state.contains_key(&rel_str) {
+                    if should_inject(&file, &rel_str)
+                        && !self.previous_state.contains_key(&rel_str)
+                    {
                         set.insert(rel_str);
                         injected += 1;
                     }
