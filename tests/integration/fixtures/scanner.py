@@ -34,20 +34,34 @@ def scan_tree(sync_folder: Path) -> set[str]:
 
 
 def match_tree(actual_files: set[str], expected_patterns: list[str]) -> TreeMatchResult:
-    """Bijective regex matching: each pattern must match >= 1 file, each file >= 1 pattern."""
+    """Regex matching of expected patterns against actual files.
+
+    Each required pattern must match >= 1 file. Each file must match >= 1 pattern.
+    Patterns prefixed with ``~`` are optional: they absorb matching files but
+    do not fail when nothing matches.
+    """
     matched: dict[str, list[str]] = {}
     matched_files: set[str] = set()
+    optional: set[str] = set()
 
-    for pattern in expected_patterns:
+    for raw in expected_patterns:
+        if raw.startswith("~"):
+            pattern = raw[1:]
+            optional.add(raw)
+        else:
+            pattern = raw
         hits = []
         for f in actual_files:
             if re.fullmatch(pattern, f):
                 hits.append(f)
                 matched_files.add(f)
         if hits:
-            matched[pattern] = hits
+            matched[raw] = hits
 
-    unmatched_patterns = [p for p in expected_patterns if p not in matched]
+    unmatched_patterns = [
+        p for p in expected_patterns
+        if p not in matched and p not in optional
+    ]
     extra_files = sorted(f for f in actual_files if f not in matched_files)
 
     return TreeMatchResult(

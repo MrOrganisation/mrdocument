@@ -18,4 +18,4 @@ steps:
     expected:
       - 'archive/arbeit_rechnung_keller\.txt'
       - 'sorted/arbeit/Keller und Partner/arbeit-.*2025-05-12.*\.txt'
-      - 'void/.*/processed/arbeit-.*2025-05-12.*\.txt'
+      - '~void/.*/processed/arbeit-.*2025-05-12.*\.txt'

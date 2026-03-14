@@ -18,4 +18,4 @@ steps:
     expected:
       - 'archive/privat_kontoauszug_sparkasse\.pdf'
       - 'sorted/privat/Kontoauszug/privat-.*2025-11-30.*\.pdf'
-      - 'void/.*/processed/privat-.*2025-11-30.*\.pdf'
+      - '~void/.*/processed/privat-.*2025-11-30.*\.pdf'
