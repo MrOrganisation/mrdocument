@@ -38,6 +38,7 @@ struct SnapshotIndex {
 pub const DIRECT_DIRS: &[&str] = &[
     "archive",
     "incoming",
+    "reclassify",
     "reviewed",
     "processed",
     "reset",
@@ -49,7 +50,7 @@ pub const DIRECT_DIRS: &[&str] = &[
 pub const RECURSIVE_DIRS: &[&str] = &["sorted"];
 
 /// Locations where unknown files are allowed (not stray).
-const ELIGIBLE_LOCATIONS: &[&str] = &["incoming", "sorted"];
+const ELIGIBLE_LOCATIONS: &[&str] = &["incoming", "reclassify", "sorted"];
 
 /// Config filenames inside `sorted/{context}/`.
 const CONFIG_FILENAMES: &[&str] = &["context.yaml", "smartfolders.yaml", "generated.yaml"];

@@ -1,0 +1,22 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_vertrag_fischer.pdf
+    path_of_generated_file: generated/arbeit_vertrag_fischer.pdf
+timeout: 10s
+steps:
+  # Step 1: Initial processing
+  - input:
+      - incoming/arbeit_vertrag_fischer.pdf
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'processed/arbeit-.*2025-06-01.*\.pdf'
+  # Step 2: Copy archive file (source_hash match) to reclassify/ → reprocessed
+  - input:
+      - copy_match: 'archive/arbeit_vertrag_fischer\.pdf'
+        to: 'reclassify/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'processed/arbeit-.*2025-06-01.*\.pdf'
+      - '~void/.*/reclassify/.*'
+      - '~void/.*/processed/.*'

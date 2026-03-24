@@ -634,6 +634,10 @@ impl DocumentWatcherV2 {
             .db
             .get_records_with_output_filename(Some(self.name.as_str()))
             .await?;
+        // Prune in-flight set: records whose processing completed (output_filename
+        // cleared by ingest_output) should be eligible for re-launch (reclassify).
+        let active_ids: HashSet<Uuid> = to_process.iter().map(|r| r.id).collect();
+        self._in_flight.retain(|id| active_ids.contains(id));
         let new_launches: Vec<Record> = to_process
             .into_iter()
             .filter(|r| !self._in_flight.contains(&r.id))

@@ -61,6 +61,7 @@ class TestConfig:
     sorted_dir: Path = field(init=False)
     error_dir: Path = field(init=False)
     duplicates_dir: Path = field(init=False)
+    reclassify_dir: Path = field(init=False)
     reset_dir: Path = field(init=False)
     trash_dir: Path = field(init=False)
     void_dir: Path = field(init=False)
@@ -78,6 +79,7 @@ class TestConfig:
         self.sorted_dir = self.sync_folder / "sorted"
         self.error_dir = self.sync_folder / "error"
         self.duplicates_dir = self.sync_folder / "duplicates"
+        self.reclassify_dir = self.sync_folder / "reclassify"
         self.reset_dir = self.sync_folder / "reset"
         self.trash_dir = self.sync_folder / "trash"
         self.void_dir = self.sync_folder / "void"
@@ -530,6 +532,7 @@ def reset_environment(test_config: TestConfig):
         test_config.sorted_dir,
         test_config.error_dir,
         test_config.duplicates_dir,
+        test_config.reclassify_dir,
         test_config.reset_dir,
         test_config.trash_dir,
         test_config.void_dir,

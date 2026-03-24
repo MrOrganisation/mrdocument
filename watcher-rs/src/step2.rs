@@ -412,6 +412,130 @@ fn handle_addition<F>(
         return;
     }
 
+    // reclassify/ handling: reset an existing record for reprocessing
+    if location == "reclassify" {
+        let change_hash = change.hash.as_deref().unwrap_or("");
+        if change_hash.is_empty() {
+            rejected.push((change.path.clone(), format!("error/{}", filename)));
+            return;
+        }
+
+        // Match against existing records: source_hash first, then hash
+        #[derive(PartialEq)]
+        enum ReclassifyMatch {
+            SourceHash,
+            Hash,
+        }
+        let mut matched: Option<(usize, ReclassifyMatch)> = None;
+
+        for (i, r) in records.iter().enumerate() {
+            if r.state == State::NeedsDeletion || r.state == State::IsDeleted {
+                continue;
+            }
+            if r.source_hash == change_hash {
+                matched = Some((i, ReclassifyMatch::SourceHash));
+                break;
+            }
+        }
+        if matched.is_none() {
+            for (i, r) in records.iter().enumerate() {
+                if r.state == State::NeedsDeletion || r.state == State::IsDeleted {
+                    continue;
+                }
+                if r.hash.as_deref() == Some(change_hash) {
+                    matched = Some((i, ReclassifyMatch::Hash));
+                    break;
+                }
+            }
+        }
+
+        let (idx, match_type) = match matched {
+            Some(m) => m,
+            None => {
+                rejected.push((change.path.clone(), format!("error/{}", filename)));
+                return;
+            }
+        };
+
+        let record = &mut records[idx];
+        let record_id = record.id;
+
+        // Check if a live source file exists (any source_paths entry not in reclassify/)
+        let live_source = record
+            .source_paths
+            .iter()
+            .find(|pe| decompose_path(&pe.path).0 != "reclassify")
+            .cloned();
+
+        if live_source.is_some() {
+            // Case 1: Original source exists — reclassify file is just a trigger
+            record.deleted_paths.push(change.path.clone());
+        } else if match_type == ReclassifyMatch::SourceHash {
+            // Case 2: No live source, but reclassify file IS the original
+            record.source_paths.push(PathEntry {
+                path: change.path.clone(),
+                timestamp: now,
+            });
+        } else {
+            // Case 3: No live source + hash-only match — can't recover original
+            warn!(
+                "Reclassify file {} matched record {} by hash but no original source exists",
+                change.path, record_id
+            );
+            rejected.push((change.path.clone(), format!("error/{}", filename)));
+            return;
+        }
+
+        // Mark all current_paths for deletion
+        for pe in record.current_paths.drain(..) {
+            record.deleted_paths.push(pe.path);
+        }
+        record.missing_current_paths.clear();
+
+        // Keep only the chosen source, mark rest for deletion
+        let keep_path = if let Some(ref ls) = live_source {
+            ls.path.clone()
+        } else {
+            change.path.clone()
+        };
+        let mut kept = Vec::new();
+        for pe in record.source_paths.drain(..) {
+            if pe.path == keep_path {
+                kept.push(pe);
+            } else {
+                record.deleted_paths.push(pe.path.clone());
+                record.missing_source_paths.push(pe);
+            }
+        }
+        record.source_paths = kept;
+
+        // Reset record for reprocessing
+        record.context = None;
+        record.metadata = None;
+        record.assigned_filename = None;
+        record.hash = None;
+        record.content_hash = None;
+        record.target_path = None;
+        record.source_reference = None;
+        record.current_reference = None;
+
+        if live_source.is_some() {
+            // Case 1: source already in archive — go straight to NeedsProcessing
+            // to avoid reconcile's IsNew handler which would set source_reference
+            // and try to move the archive file to itself.
+            record.output_filename = Some(Uuid::new_v4().to_string());
+            record.state = State::NeedsProcessing;
+        } else {
+            // Case 2: source in reclassify/ — use IsNew so reconcile moves it
+            // to archive and assigns output_filename.
+            record.output_filename = None;
+            record.state = State::IsNew;
+        }
+
+        mark_modified(record_id, modified_ids);
+        return;
+    }
+
     // Non-.output locations
     let config = match LOCATION_CONFIG.get(location.as_str()) {
         Some(c) => *c,
@@ -4396,5 +4520,269 @@ mod tests {
         let meta = r.metadata.as_ref().unwrap();
         assert_eq!(meta.get("sender").unwrap().as_str(), Some("schmidt"));
         assert_eq!(meta.get("type").unwrap().as_str(), Some("Rechnung"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Reclassify tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_reclassify_source_hash_match_live_source() {
+        // File in reclassify/ matches a record by source_hash.
+        // Record has a live archive source → reclassify file is just a trigger.
+        let mut record = _make_record();
+        record.source_hash = "src_hash_1".to_string();
+        record.hash = Some("out_hash_1".to_string());
+        record.state = State::IsComplete;
+        record.context = Some("arbeit".to_string());
+        record.metadata = Some(json!({"type": "Rechnung"}));
+        record.assigned_filename = Some("arbeit-rechnung.pdf".to_string());
+        record.source_paths.push(PathEntry {
+            path: "archive/file.pdf".to_string(),
+            timestamp: _ts(-10),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/arbeit/arbeit-rechnung.pdf".to_string(),
+            timestamp: _ts(-5),
+        });
+        let record_id = record.id;
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/file.pdf",
+            Some("src_hash_1"),
+            Some(1024),
+        );
+
+        let (modified_ids, created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert!(rejected.is_empty());
+        assert!(created.is_empty());
+        assert!(modified_ids.contains(&record_id));
+
+        let r = &records[0];
+        // Case 1: live source in archive → NeedsProcessing directly
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.context.is_none());
+        assert!(r.metadata.is_none());
+        assert!(r.assigned_filename.is_none());
+        assert!(r.hash.is_none());
+        assert!(r.output_filename.is_some()); // UUID assigned directly
+
+        // Live archive source is kept
+        assert_eq!(r.source_paths.len(), 1);
+        assert_eq!(r.source_paths[0].path, "archive/file.pdf");
+
+        // Reclassify trigger + old current_paths are in deleted_paths
+        assert!(r.deleted_paths.contains(&"reclassify/file.pdf".to_string()));
+        assert!(r.deleted_paths.contains(&"sorted/arbeit/arbeit-rechnung.pdf".to_string()));
+        assert!(r.current_paths.is_empty());
+    }
+
+    #[test]
+    fn test_reclassify_source_hash_match_no_live_source() {
+        // File in reclassify/ matches by source_hash, but no live source exists.
+        // The reclassify file becomes the new source.
+        let mut record = _make_record();
+        record.source_hash = "src_hash_2".to_string();
+        record.hash = Some("out_hash_2".to_string());
+        record.state = State::IsMissing;
+        record.context = Some("arbeit".to_string());
+        // No source_paths (all missing)
+        record.missing_source_paths.push(PathEntry {
+            path: "archive/file.pdf".to_string(),
+            timestamp: _ts(-20),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/arbeit/old.pdf".to_string(),
+            timestamp: _ts(-5),
+        });
+        let record_id = record.id;
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/file.pdf",
+            Some("src_hash_2"),
+            Some(1024),
+        );
+
+        let (modified_ids, created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert!(rejected.is_empty());
+        assert!(created.is_empty());
+        assert!(modified_ids.contains(&record_id));
+
+        let r = &records[0];
+        assert_eq!(r.state, State::IsNew);
+
+        // Reclassify file becomes the new source
+        assert_eq!(r.source_paths.len(), 1);
+        assert_eq!(r.source_paths[0].path, "reclassify/file.pdf");
+
+        // Old current_paths cleaned up
+        assert!(r.deleted_paths.contains(&"sorted/arbeit/old.pdf".to_string()));
+        assert!(r.current_paths.is_empty());
+    }
+
+    #[test]
+    fn test_reclassify_hash_match_no_live_source_rejected() {
+        // File matches by hash only, no live source → can't recover, reject to error
+        let mut record = _make_record();
+        record.source_hash = "different_src_hash".to_string();
+        record.hash = Some("out_hash_3".to_string());
+        record.state = State::IsComplete;
+        record.context = Some("arbeit".to_string());
+        // No live source_paths
+        let original_state = record.state;
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/processed.pdf",
+            Some("out_hash_3"), // matches record.hash, NOT source_hash
+            Some(1024),
+        );
+
+        let (_modified_ids, _created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].0, "reclassify/processed.pdf");
+        assert_eq!(rejected[0].1, "error/processed.pdf");
+        // Record untouched
+        assert_eq!(records[0].state, original_state);
+    }
+
+    #[test]
+    fn test_reclassify_no_match_rejected() {
+        // File in reclassify/ matches no record → reject to error
+        let mut record = _make_record();
+        record.source_hash = "some_hash".to_string();
+        record.hash = Some("other_hash".to_string());
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/unknown.pdf",
+            Some("no_match_hash"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].1, "error/unknown.pdf");
+    }
+
+    #[test]
+    fn test_reclassify_skips_deleted_records() {
+        // Record in NeedsDeletion should not be matched
+        let mut record = _make_record();
+        record.source_hash = "del_hash".to_string();
+        record.state = State::NeedsDeletion;
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/file.pdf",
+            Some("del_hash"),
+            Some(1024),
+        );
+
+        let (_modified_ids, _created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert_eq!(rejected.len(), 1, "should not match deleted record");
+    }
+
+    #[test]
+    fn test_reclassify_hash_match_with_live_source() {
+        // File matches by hash (not source_hash), but live source exists → OK
+        let mut record = _make_record();
+        record.source_hash = "original_src".to_string();
+        record.hash = Some("processed_hash".to_string());
+        record.state = State::IsComplete;
+        record.context = Some("privat".to_string());
+        record.assigned_filename = Some("privat-doc.pdf".to_string());
+        record.source_paths.push(PathEntry {
+            path: "archive/doc.pdf".to_string(),
+            timestamp: _ts(-10),
+        });
+        record.current_paths.push(PathEntry {
+            path: "sorted/privat/privat-doc.pdf".to_string(),
+            timestamp: _ts(-5),
+        });
+        let record_id = record.id;
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/output.pdf",
+            Some("processed_hash"), // matches record.hash
+            Some(2048),
+        );
+
+        let (modified_ids, _created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert!(rejected.is_empty());
+        assert!(modified_ids.contains(&record_id));
+
+        let r = &records[0];
+        // Case 1: live source in archive → NeedsProcessing directly
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+        // Live archive source kept
+        assert_eq!(r.source_paths.len(), 1);
+        assert_eq!(r.source_paths[0].path, "archive/doc.pdf");
+        // Reclassify file is trigger → in deleted_paths
+        assert!(r.deleted_paths.contains(&"reclassify/output.pdf".to_string()));
     }
 }

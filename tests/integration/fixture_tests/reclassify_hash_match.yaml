@@ -1,0 +1,22 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_rechnung_schulze.pdf
+    path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
+timeout: 10s
+steps:
+  # Step 1: Initial processing
+  - input:
+      - incoming/arbeit_rechnung_schulze.pdf
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+  # Step 2: Copy processed file (hash match) to reclassify/ → reprocessed from archive
+  - input:
+      - copy_match: 'processed/arbeit-.*2025-03-15.*\.pdf'
+        to: 'reclassify/'
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+      - '~void/.*/reclassify/.*'
+      - '~void/.*/processed/.*'
