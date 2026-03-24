@@ -1049,6 +1049,107 @@ impl SorterContextManager {
         true
     }
 
+    /// Extract folder field candidate info for all contexts.
+    ///
+    /// For each context, for each folder field (except "context"), collects
+    /// all valid candidate values and the `allow_new_candidates` flag.
+    /// Returns `context_name → field_name → (candidates, allow_new)`.
+    pub fn folder_field_candidates(
+        &self,
+    ) -> HashMap<String, HashMap<String, (Vec<String>, bool)>> {
+        let mut result: HashMap<String, HashMap<String, (Vec<String>, bool)>> = HashMap::new();
+
+        for (ctx_name, ctx_config) in &self.contexts {
+            let ctx_data = match self.load_context_yaml(ctx_name) {
+                Some(d) => d,
+                None => continue,
+            };
+            let fields = match ctx_data
+                .as_mapping()
+                .and_then(|m| m.get(&serde_yaml::Value::String("fields".into())))
+                .and_then(|v| v.as_mapping())
+            {
+                Some(f) => f,
+                None => continue,
+            };
+
+            let mut field_map: HashMap<String, (Vec<String>, bool)> = HashMap::new();
+
+            for folder_field in &ctx_config.folders {
+                if folder_field == "context" {
+                    continue;
+                }
+                let field_key = serde_yaml::Value::String(folder_field.clone());
+                let field_config = match fields.get(&field_key).and_then(|v| v.as_mapping()) {
+                    Some(fc) => fc,
+                    None => continue, // no field config → no validation
+                };
+                let candidates_val =
+                    match field_config.get(&serde_yaml::Value::String("candidates".into())) {
+                        Some(c) => c,
+                        None => continue, // no candidates → no validation
+                    };
+
+                let mut candidates: Vec<String> = Vec::new();
+                if let Some(seq) = candidates_val.as_sequence() {
+                    for c in seq {
+                        if let Some(s) = c.as_str() {
+                            candidates.push(s.to_string());
+                        }
+                        if let Some(map) = c.as_mapping() {
+                            if let Some(name) = yaml_str_from_mapping(map, "name") {
+                                candidates.push(name);
+                            }
+                            if let Some(short) = yaml_str_from_mapping(map, "short") {
+                                candidates.push(short);
+                            }
+                        }
+                    }
+                }
+
+                // Also include generated candidates
+                if let Some(gen_fields) = self.generated_data.get(ctx_name) {
+                    if let Some(gen_field) = gen_fields.get(folder_field) {
+                        if let Some(gen_candidates) = gen_field
+                            .as_mapping()
+                            .and_then(|m| {
+                                m.get(&serde_yaml::Value::String("candidates".into()))
+                            })
+                            .and_then(|v| v.as_sequence())
+                        {
+                            for c in gen_candidates {
+                                if let Some(s) = c.as_str() {
+                                    candidates.push(s.to_string());
+                                }
+                                if let Some(map) = c.as_mapping() {
+                                    if let Some(name) = yaml_str_from_mapping(map, "name") {
+                                        candidates.push(name);
+                                    }
+                                    if let Some(short) = yaml_str_from_mapping(map, "short") {
+                                        candidates.push(short);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let allow_new = field_config
+                    .get(&serde_yaml::Value::String("allow_new_candidates".into()))
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+
+                field_map.insert(folder_field.clone(), (candidates, allow_new));
+            }
+
+            if !field_map.is_empty() {
+                result.insert(ctx_name.clone(), field_map);
+            }
+        }
+
+        result
+    }
+
     /// Record a new candidate value in the generated file.
     #[allow(dead_code)]
     pub fn record_new_item(

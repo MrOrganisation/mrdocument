@@ -1,0 +1,12 @@
+contexts:
+  - privat_with_sender
+files:
+  - filename: privat_arztbrief_braun.pdf
+    path_of_generated_file: generated/privat_arztbrief_braun.pdf
+timeout: 10s
+steps:
+  - input:
+      - sorted/privat_with_sender/different_braun/privat_arztbrief_braun.pdf
+    expected:
+      - 'archive/privat_arztbrief_braun\.pdf'
+      - 'sorted/privat_with_sender/different_braun/privat_with_sender-[^-]*-2025-04-10-different_braun\.pdf'

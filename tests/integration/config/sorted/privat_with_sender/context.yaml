@@ -1,0 +1,27 @@
+name: privat_with_sender
+description: Persoenliche Dokumente wie Arztbriefe, Versicherungsunterlagen und Kontoauszuege
+
+filename: "{context}-{type}-{date}-{sender}"
+audio_filename: "{context}-{source_filename}-{date}"
+
+fields:
+  type:
+    instructions: "Bestimme den Dokumenttyp anhand des Inhalts. Nur die angegebenen Kandidaten sind erlaubt."
+    candidates:
+      - "Arztbrief"
+      - "Versicherung"
+      - "Kontoauszug"
+    allow_new_candidates: false
+
+  sender:
+    instructions: "Bestimme den Absender oder die Organisation, die das Dokument erstellt hat."
+    candidates:
+      - "Dr. Braun"
+      - "Dr. Mueller"
+      - "Allianz"
+      - "Sparkasse"
+    allow_new_candidates: true
+
+folders:
+  - "context"
+  - "sender"

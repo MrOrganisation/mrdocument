@@ -1,0 +1,16 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_vertrag_fischer.pdf
+    path_of_generated_file: generated/arbeit_vertrag_fischer.pdf
+timeout: 10s
+steps:
+  - input:
+      - sorted/arbeit/foo/arbeit_vertrag_fischer.pdf
+    expected:
+      - error/arbeit/foo/arbeit_vertrag_fischer.pdf
+  - input:
+      - sorted/arbeit/foo/bar/arbeit_vertrag_fischer.pdf
+    expected:
+      - error/arbeit/foo/arbeit_vertrag_fischer.pdf
+      - error/arbeit/foo/bar/arbeit_vertrag_fischer.pdf

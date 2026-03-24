@@ -177,6 +177,8 @@ pub struct DocumentWatcherV2 {
     pub service_url: String,
     pub context_field_names: Option<HashMap<String, Vec<String>>>,
     pub context_folders: Option<HashMap<String, Vec<String>>>,
+    pub folder_field_candidates:
+        Option<HashMap<String, HashMap<String, (Vec<String>, bool)>>>,
     pub detector: FilesystemDetector,
     pub processor: Processor,
     pub reconciler: FilesystemReconciler,
@@ -250,6 +252,7 @@ impl DocumentWatcherV2 {
             service_url,
             context_field_names,
             context_folders,
+            folder_field_candidates: None,
             detector,
             processor,
             reconciler,
@@ -473,6 +476,7 @@ impl DocumentWatcherV2 {
         cm.load();
         self.context_field_names = Some(context_field_names_from_sorter(cm));
         self.context_folders = Some(context_folders_from_sorter(cm));
+        self.folder_field_candidates = Some(cm.folder_field_candidates());
         self._recompute_filename = Some(build_recompute_filename(cm));
 
         // Update processor contexts and context_manager
@@ -571,6 +575,7 @@ impl DocumentWatcherV2 {
                 &mut created,
                 |path| Self::read_sidecar_from_root(&self.root, &self.name, path),
                 self.context_folders.as_ref(),
+                self.folder_field_candidates.as_ref(),
             );
             modified_ids = m_ids;
             new_records = created_recs;
