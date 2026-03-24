@@ -12,4 +12,5 @@ steps:
   - input:
       - sorted/foo/bar/arbeit_vertrag_fischer.pdf
     expected:
+      - error/arbeit_vertrag_fischer.pdf
       - error/bar/arbeit_vertrag_fischer.pdf

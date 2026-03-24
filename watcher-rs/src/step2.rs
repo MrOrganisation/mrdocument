@@ -283,19 +283,22 @@ pub fn compute_target_path(
 /// The `read_sidecar` parameter is a closure that reads sidecar JSON for
 /// an `.output` path, returning a `serde_json::Value`.
 ///
-/// Returns `(modified_records, new_records)`.
+/// Returns `(modified_records, new_records, rejected_paths)`.
+/// Rejected paths are `(source_rel_path, error_dest_rel_path)` pairs for
+/// files in `sorted/` with an invalid (unconfigured) context.
 pub fn preprocess<F>(
     changes: &[ChangeItem],
     records: &mut Vec<Record>,
     new_records: &mut Vec<Record>,
     read_sidecar: F,
     context_folders: Option<&HashMap<String, Vec<String>>>,
-) -> (Vec<Uuid>, Vec<Record>)
+) -> (Vec<Uuid>, Vec<Record>, Vec<(String, String)>)
 where
     F: Fn(&str) -> serde_json::Value,
 {
     let mut modified_ids: HashSet<Uuid> = HashSet::new();
     let mut created: Vec<Record> = Vec::new();
+    let mut rejected: Vec<(String, String)> = Vec::new();
     let now = Utc::now();
 
     for change in changes {
@@ -310,6 +313,7 @@ where
                     &mut modified_ids,
                     now,
                     context_folders,
+                    &mut rejected,
                 );
             }
             EventType::Removal => {
@@ -318,7 +322,7 @@ where
         }
     }
 
-    (modified_ids.into_iter().collect(), created)
+    (modified_ids.into_iter().collect(), created, rejected)
 }
 
 fn handle_addition<F>(
@@ -330,6 +334,7 @@ fn handle_addition<F>(
     modified_ids: &mut HashSet<Uuid>,
     now: DateTime<Utc>,
     context_folders: Option<&HashMap<String, Vec<String>>>,
+    rejected: &mut Vec<(String, String)>,
 ) where
     F: Fn(&str) -> serde_json::Value,
 {
@@ -532,6 +537,31 @@ fn handle_addition<F>(
             let (_, loc_path, _) = decompose_path(&change.path);
             if !loc_path.is_empty() {
                 let parts: Vec<&str> = loc_path.split('/').collect();
+
+                // Reject files with an invalid (unconfigured) context
+                if let Some(folders_map) = context_folders {
+                    if !folders_map.contains_key(parts[0]) {
+                        // Build error destination: error/{subpath after context}/{filename}
+                        let subpath = if parts.len() > 1 {
+                            parts[1..].join("/")
+                        } else {
+                            String::new()
+                        };
+                        let (_, _, fname) = decompose_path(&change.path);
+                        let error_dest = if subpath.is_empty() {
+                            format!("error/{}", fname)
+                        } else {
+                            format!("error/{}/{}", subpath, fname)
+                        };
+                        warn!(
+                            "Invalid context '{}' in sorted path {}, rejecting to {}",
+                            parts[0], change.path, error_dest
+                        );
+                        rejected.push((change.path.clone(), error_dest));
+                        return;
+                    }
+                }
+
                 new_record.context = Some(parts[0].to_string());
 
                 // Extract additional subfolder fields into metadata
@@ -1053,7 +1083,7 @@ mod tests {
             "assigned_filename": "2025-01-Invoice.pdf",
         });
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 sidecar_data.clone()
             }, None);
@@ -1092,7 +1122,7 @@ mod tests {
             Some(0),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1116,7 +1146,7 @@ mod tests {
             Some(100),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
@@ -1142,7 +1172,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1169,7 +1199,7 @@ mod tests {
             Some(1024),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
@@ -1190,7 +1220,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, created) =
+        let (_modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(created.len(), 1);
@@ -1220,7 +1250,7 @@ mod tests {
             Some(500),
         );
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, _rejected) = preprocess(
             &[change_a, change_b],
             &mut records,
             &mut new_records,
@@ -1258,7 +1288,7 @@ mod tests {
             Some(800),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1284,7 +1314,7 @@ mod tests {
             Some(600),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1309,7 +1339,7 @@ mod tests {
             Some(300),
         );
 
-        let (_modified_ids, created) =
+        let (_modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(created.len(), 1);
@@ -1336,7 +1366,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1361,7 +1391,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1387,7 +1417,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1412,7 +1442,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
@@ -1430,7 +1460,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
@@ -1452,7 +1482,7 @@ mod tests {
             Some(700),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1477,7 +1507,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1504,7 +1534,7 @@ mod tests {
         let mut new_records: Vec<Record> = Vec::new();
         let change = _make_change(EventType::Removal, "incoming/doc.pdf", None, None);
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1531,7 +1561,7 @@ mod tests {
         let mut new_records: Vec<Record> = Vec::new();
         let change = _make_change(EventType::Removal, "sorted/work/doc.pdf", None, None);
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1565,7 +1595,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1595,7 +1625,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -1633,7 +1663,7 @@ mod tests {
             Some(100),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(
@@ -1668,7 +1698,7 @@ mod tests {
             Some(100),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(
@@ -1703,7 +1733,7 @@ mod tests {
             Some(100),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -2597,7 +2627,7 @@ mod tests {
             Some(1024),
         );
 
-        let (modified_ids, _created) = preprocess(&[change], &mut records, &mut new_records, |_p| {
+        let (modified_ids, _created, _rejected) = preprocess(&[change], &mut records, &mut new_records, |_p| {
             json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
         }, None);
 
@@ -2643,7 +2673,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created) =
+        let (_modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
             }, None);
@@ -2673,7 +2703,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created) =
+        let (_modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {"date": "2025"}, "assigned_filename": "out.pdf"})
             }, None);
@@ -2700,7 +2730,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created) =
+        let (_modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
             }, None);
@@ -2739,7 +2769,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created) =
+        let (_modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
             }, None);
@@ -2788,7 +2818,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created) =
+        let (_modified_ids, _created, _rejected) =
             preprocess(&[c1, c2], &mut records, &mut new_records, |_p| {
                 json!({"context": "work", "metadata": {}, "assigned_filename": "out.pdf"})
             }, None);
@@ -2836,7 +2866,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -2867,7 +2897,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -2927,7 +2957,7 @@ mod tests {
             Some(700),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert_eq!(modified_ids.len(), 1);
@@ -2948,7 +2978,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, created) =
+        let (modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(modified_ids.is_empty());
@@ -2971,7 +3001,7 @@ mod tests {
             Some(500),
         );
 
-        let (modified_ids, _created) =
+        let (modified_ids, _created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, None);
 
         // source_hash match is not configured for reset/
@@ -3206,7 +3236,7 @@ mod tests {
             size: Some(10000),
         };
 
-        let (_modified, created) =
+        let (_modified, created, _rejected) =
             preprocess(&[sorted_change], &mut records, &mut new_records, _noop_sidecar, None);
         assert_eq!(created.len(), 1, "Should create one new record");
         records.push(created.into_iter().next().unwrap());
@@ -3252,7 +3282,7 @@ mod tests {
             "metadata": {"date": "2026-01-10"},
             "assigned_filename": "ga-2026-01-10-file.txt",
         });
-        let (_modified, _created) =
+        let (_modified, _created, _rejected) =
             preprocess(&[output_change], &mut records, &mut new_records, |_| sidecar.clone(), None);
 
         assert!(records[0].output_filename.is_none(), "output_filename consumed");
@@ -3294,7 +3324,7 @@ mod tests {
             content_hash: Some("content_abc".to_string()),
             size: Some(10000),
         };
-        let (_modified, _created) =
+        let (_modified, _created, _rejected) =
             preprocess(&[trash_change], &mut records, &mut new_records, _noop_sidecar, None);
 
         assert!(
@@ -3380,7 +3410,7 @@ mod tests {
             Some(50000),
         );
 
-        let (_modified_ids, created) =
+        let (_modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, Some(&context_folders));
 
         assert_eq!(created.len(), 1);
@@ -3430,7 +3460,7 @@ mod tests {
             Some("output_hash_1"),
             Some(10000),
         );
-        let (modified_ids, _) = preprocess(
+        let (modified_ids, _, _rejected) = preprocess(
             &[output_change],
             &mut all_records,
             &mut Vec::new(),
@@ -3547,7 +3577,7 @@ mod tests {
             Some(126000),
         );
 
-        let (_modified_ids, created) =
+        let (_modified_ids, created, _rejected) =
             preprocess(&[change], &mut records, &mut new_records, _noop_sidecar, Some(&context_folders));
 
         assert_eq!(created.len(), 1);
@@ -3583,7 +3613,7 @@ mod tests {
             None,
             None,
         );
-        let (modified_ids, _) = preprocess(
+        let (modified_ids, _, _rejected) = preprocess(
             &[removal],
             &mut all_records,
             &mut Vec::new(),
@@ -3641,7 +3671,7 @@ mod tests {
             Some("output_hash_audio"),
             Some(5000),
         );
-        let (modified_ids, _) = preprocess(
+        let (modified_ids, _, _rejected) = preprocess(
             &[output_change],
             &mut all_records,
             &mut Vec::new(),
@@ -3711,7 +3741,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, _rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -3748,7 +3778,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, _rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -3790,7 +3820,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, _rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -3835,7 +3865,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, _rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -3868,7 +3898,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, _rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -3885,6 +3915,7 @@ mod tests {
     #[test]
     fn test_sorted_context_not_in_folders_config() {
         // sorted/arbeit/schmidt/file.pdf but folders config only has "privat"
+        // → file should be rejected (invalid context)
         let mut records: Vec<Record> = Vec::new();
         let mut new_records: Vec<Record> = Vec::new();
         let change = _make_change(
@@ -3901,7 +3932,7 @@ mod tests {
         .into_iter()
         .collect();
 
-        let (_modified_ids, created) = preprocess(
+        let (_modified_ids, created, rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -3909,10 +3940,10 @@ mod tests {
             Some(&context_folders),
         );
 
-        assert_eq!(created.len(), 1);
-        assert_eq!(created[0].context.as_deref(), Some("arbeit"));
-        // Context not in folders config → no metadata
-        assert!(created[0].metadata.is_none());
+        assert_eq!(created.len(), 0);
+        assert_eq!(rejected.len(), 1);
+        assert_eq!(rejected[0].0, "sorted/arbeit/schmidt/file.pdf");
+        assert_eq!(rejected[0].1, "error/schmidt/file.pdf");
     }
 
     #[test]

@@ -565,7 +565,7 @@ impl DocumentWatcherV2 {
 
         if !changes.is_empty() {
             let mut created: Vec<Record> = Vec::new();
-            let (m_ids, created_recs) = step2::preprocess(
+            let (m_ids, created_recs, rejected_paths) = step2::preprocess(
                 &changes,
                 &mut snapshot_mut,
                 &mut created,
@@ -574,6 +574,33 @@ impl DocumentWatcherV2 {
             );
             modified_ids = m_ids;
             new_records = created_recs;
+
+            // Move files rejected due to invalid context to error/
+            for (src_rel, dest_rel) in &rejected_paths {
+                let src = self.root.join(src_rel);
+                let dest = self.root.join(dest_rel);
+                if let Some(parent) = dest.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        error!(
+                            "[{}] Failed to create error directory {}: {}",
+                            self.name,
+                            parent.display(),
+                            e
+                        );
+                        continue;
+                    }
+                }
+                match std::fs::rename(&src, &dest) {
+                    Ok(()) => info!(
+                        "[{}] Moved invalid-context file {} -> {}",
+                        self.name, src_rel, dest_rel
+                    ),
+                    Err(e) => error!(
+                        "[{}] Failed to move invalid-context file {} -> {}: {}",
+                        self.name, src_rel, dest_rel, e
+                    ),
+                }
+            }
 
             if !modified_ids.is_empty() || !new_records.is_empty() {
                 info!(
