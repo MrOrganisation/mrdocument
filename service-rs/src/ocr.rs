@@ -47,7 +47,7 @@ impl OcrClient {
         if fname.len() > 104 {
             let dot_pos = fname.rfind('.').unwrap_or(fname.len());
             let ext = &fname[dot_pos..];
-            fname = format!("{}{}", &fname[..100], ext);
+            fname = format!("{}{}", crate::truncate::truncate_str(&fname, 100), ext);
             debug!("Truncated filename to: {}", fname);
         }
 

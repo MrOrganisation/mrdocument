@@ -317,7 +317,7 @@ fn truncate_json_fields(value: &serde_json::Value, max_len: usize) -> String {
         }
         Value::String(s) => {
             if s.len() > max_len {
-                format!("\"{}...\"", &s[..max_len])
+                format!("\"{}...\"", crate::truncate::truncate_str(s, max_len))
             } else {
                 format!("\"{}\"", s)
             }

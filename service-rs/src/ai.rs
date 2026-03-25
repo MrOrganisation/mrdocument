@@ -195,7 +195,9 @@ pub fn sanitize(s: &str) -> String {
 
     // Truncate
     if result.len() > 50 {
-        result = result[..50].trim_end_matches('_').to_string();
+        result = crate::truncate::truncate_str(&result, 50)
+            .trim_end_matches('_')
+            .to_string();
     }
 
     result
@@ -1211,7 +1213,7 @@ impl AiClient {
             .map(|(k, v)| {
                 let s = v.as_str().unwrap_or("");
                 if s.len() > 30 {
-                    format!("{}={}...", k, &s[..30])
+                    format!("{}={}...", k, crate::truncate::truncate_str(s, 30))
                 } else {
                     format!("{}={}", k, s)
                 }

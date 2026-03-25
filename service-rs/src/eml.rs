@@ -16,7 +16,7 @@ pub fn eml_to_pdf(eml_bytes: &[u8]) -> Result<Vec<u8>, String> {
     debug!(
         "Parsed EML: subject={}, from={}, to={}",
         if subject.len() > 50 {
-            &subject[..50]
+            crate::truncate::truncate_str(&subject, 50)
         } else {
             &subject
         },

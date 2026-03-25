@@ -78,8 +78,8 @@ pub fn embed_metadata(
 
     debug!(
         "Embedded metadata into PDF: type={:?}, date={:?}, sender={:?}, topic={:?}, subject={:?} ({} -> {} bytes)",
-        doc_type, doc_date, sender, topic.map(|s| if s.len() > 30 { &s[..30] } else { s }),
-        subject.map(|s| if s.len() > 30 { &s[..30] } else { s }),
+        doc_type, doc_date, sender, topic.map(|s| crate::truncate::truncate_str(s, 30)),
+        subject.map(|s| crate::truncate::truncate_str(s, 30)),
         pdf_bytes.len(), output.len()
     );
 
@@ -115,7 +115,7 @@ pub fn create_pdf_from_text(text: &str) -> Vec<u8> {
     // Build content stream with line wrapping
     let mut content = String::from("BT\n/F1 10 Tf\n72 750 Td\n12 TL\n");
     for line in escaped_text.lines().take(60) {
-        let line = if line.len() > 80 { &line[..80] } else { line };
+        let line = crate::truncate::truncate_str(line, 80);
         content.push_str(&format!("({}) '\n", line));
     }
     content.push_str("ET");

@@ -9,6 +9,7 @@ mod ocr;
 mod pdf;
 mod rtf_convert;
 mod transcript;
+mod truncate;
 
 use axum::{
     extract::{DefaultBodyLimit, Multipart, State},
@@ -995,7 +996,7 @@ fn build_correction_context(metadata: &DocumentMetadata, contexts: &[Value]) -> 
                                     if !clue_strs.is_empty() {
                                         let capitalized = fname.chars().next()
                                             .map(|c| c.to_uppercase().to_string())
-                                            .unwrap_or_default() + &fname[1..];
+                                            .unwrap_or_default() + &fname[fname.chars().next().map(|c| c.len_utf8()).unwrap_or(0)..];
                                         parts.push(format!("{} '{}': {}", capitalized, value, clue_strs.join("; ")));
                                     }
                                 }
