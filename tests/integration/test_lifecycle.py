@@ -407,15 +407,19 @@ class TestUserMoveContext:
         new_path = privat_dir / sorted_file.name
         shutil.move(str(sorted_file), new_path)
 
-        # Wait for the watcher to process the move.
-        # The watcher should detect the move and NOT revert it back to arbeit/.
-        # It may rename the file to match the privat filename pattern.
-        time.sleep(3)
-
-        # The file should be somewhere under privat/, possibly renamed
-        privat_files = list(privat_dir.rglob(f"*{date}*.txt"))
-        assert len(privat_files) >= 1, (
-            f"File not found under sorted/{target_context}/ after move"
+        # Context change triggers reprocessing — poll for the reprocessed file
+        # to appear under privat/ (may be renamed to match privat filename pattern).
+        existing = set(privat_dir.rglob("*"))
+        reprocessed = poll_for_file_recursive(
+            privat_dir,
+            f"{target_context}-*",
+            test_config.poll_interval,
+            test_config.max_timeout,
+            exclude_paths=existing,
+        )
+        assert reprocessed is not None, (
+            f"Reprocessed file not found under sorted/{target_context}/ "
+            f"within {test_config.max_timeout}s after context change"
         )
 
         # The old location should be empty

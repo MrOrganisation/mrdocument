@@ -1108,70 +1108,137 @@ pub fn reconcile<'a>(
         }
 
         "sorted" => {
-            // Adopt user changes: if user renamed or moved the file, update record
-            let current_filename = current.path.rsplit('/').next().unwrap_or("");
-            if let Some(ref assigned) = record.assigned_filename {
-                if current_filename != assigned {
-                    let expected =
-                        compute_target_path(record, context_folders).unwrap_or_default();
-                    if !is_collision_variant(&current.path, &expected) {
-                        record.assigned_filename = Some(current_filename.to_string());
+            let (_, loc_path, _) = decompose_path(&current.path);
+            let dir_context = if !loc_path.is_empty() {
+                let parts: Vec<&str> = loc_path.split('/').collect();
+                if !parts[0].is_empty() {
+                    Some(parts[0].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            // Context change → reclassify-style reset with locked fields
+            let context_changed = dir_context.is_some()
+                && record.context.as_deref() != dir_context.as_deref();
+
+            if context_changed {
+                let new_ctx = dir_context.as_deref().unwrap();
+                let parts: Vec<&str> = loc_path.split('/').collect();
+
+                // Reset for reprocessing (reclassify-style)
+                record.context = Some(new_ctx.to_string());
+                record.assigned_filename = None;
+                record.hash = None;
+                record.content_hash = None;
+                record.target_path = None;
+                record.source_reference = None;
+                record.current_reference = None;
+
+                // Pre-set metadata from subfolder fields (locked)
+                record.metadata = None;
+                if let Some(folders_map) = context_folders {
+                    if let Some(folders) = folders_map.get(new_ctx) {
+                        let mut meta = serde_json::Map::new();
+                        for (i, field) in folders.iter().enumerate() {
+                            if field == "context" {
+                                continue;
+                            }
+                            if let Some(value) = parts.get(i) {
+                                if !value.is_empty() {
+                                    meta.insert(
+                                        field.clone(),
+                                        serde_json::Value::String(value.to_string()),
+                                    );
+                                }
+                            }
+                        }
+                        if !meta.is_empty() {
+                            record.metadata =
+                                Some(serde_json::Value::Object(meta));
+                        }
                     }
                 }
-            }
 
-            let (_, loc_path, _) = decompose_path(&current.path);
-            if !loc_path.is_empty() {
-                let parts: Vec<&str> = loc_path.split('/').collect();
-                let dir_context = parts[0];
-                if !dir_context.is_empty()
-                    && record.context.as_deref() != Some(dir_context)
-                {
-                    record.context = Some(dir_context.to_string());
+                // Void the current sorted file — reprocess from archive source.
+                // Keep a record in missing_source_paths so the .output handler
+                // knows this record came from sorted/ and routes back there.
+                for pe in record.current_paths.drain(..) {
+                    record.deleted_paths.push(pe.path.clone());
+                    record.missing_source_paths.push(pe);
+                }
+                record.missing_current_paths.clear();
+
+                // Go straight to NeedsProcessing (archive source stays)
+                record.output_filename = Some(Uuid::new_v4().to_string());
+                record.state = State::NeedsProcessing;
+            } else {
+                // No context change — adopt user renames as before
+                let current_filename = current.path.rsplit('/').next().unwrap_or("");
+                if let Some(ref assigned) = record.assigned_filename {
+                    if current_filename != assigned {
+                        let expected =
+                            compute_target_path(record, context_folders).unwrap_or_default();
+                        if !is_collision_variant(&current.path, &expected) {
+                            record.assigned_filename = Some(current_filename.to_string());
+                        }
+                    }
                 }
 
-                // Update metadata from subfolder fields
-                if let Some(folders_map) = context_folders {
-                    if let Some(folders) = folders_map.get(dir_context) {
-                        let metadata = record.metadata.get_or_insert_with(|| {
-                            serde_json::Value::Object(serde_json::Map::new())
-                        });
-                        if let Some(obj) = metadata.as_object_mut() {
-                            for (i, field) in folders.iter().enumerate() {
-                                if field == "context" {
-                                    continue;
-                                }
-                                if let Some(value) = parts.get(i) {
-                                    if !value.is_empty() {
-                                        obj.insert(
-                                            field.clone(),
-                                            serde_json::Value::String(value.to_string()),
-                                        );
+                if let Some(ref ctx) = dir_context {
+                    // Update metadata from subfolder fields
+                    if let Some(folders_map) = context_folders {
+                        let parts: Vec<&str> = loc_path.split('/').collect();
+                        if let Some(folders) = folders_map.get(ctx.as_str()) {
+                            let metadata = record.metadata.get_or_insert_with(|| {
+                                serde_json::Value::Object(serde_json::Map::new())
+                            });
+                            if let Some(obj) = metadata.as_object_mut() {
+                                for (i, field) in folders.iter().enumerate() {
+                                    if field == "context" {
+                                        continue;
+                                    }
+                                    if let Some(value) = parts.get(i) {
+                                        if !value.is_empty() {
+                                            obj.insert(
+                                                field.clone(),
+                                                serde_json::Value::String(
+                                                    value.to_string(),
+                                                ),
+                                            );
+                                        }
                                     }
                                 }
                             }
                         }
                     }
                 }
-            }
 
-            // Metadata completeness check
-            if let (Some(cfn), Some(ref ctx)) = (context_field_names, &record.context) {
-                if let Some(field_names) = cfn.get(ctx.as_str()) {
-                    let metadata = record.metadata.get_or_insert_with(|| {
-                        serde_json::Value::Object(serde_json::Map::new())
-                    });
-                    if let Some(obj) = metadata.as_object_mut() {
-                        for fn_name in field_names {
-                            if !obj.contains_key(fn_name) {
-                                obj.insert(fn_name.clone(), serde_json::Value::Null);
+                // Metadata completeness check
+                if let (Some(cfn), Some(ref ctx)) =
+                    (context_field_names, &record.context)
+                {
+                    if let Some(field_names) = cfn.get(ctx.as_str()) {
+                        let metadata = record.metadata.get_or_insert_with(|| {
+                            serde_json::Value::Object(serde_json::Map::new())
+                        });
+                        if let Some(obj) = metadata.as_object_mut() {
+                            for fn_name in field_names {
+                                if !obj.contains_key(fn_name) {
+                                    obj.insert(
+                                        fn_name.clone(),
+                                        serde_json::Value::Null,
+                                    );
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            record.state = State::IsComplete;
+                record.state = State::IsComplete;
+            }
         }
 
         _ => {}
@@ -2712,6 +2779,7 @@ mod tests {
 
     #[test]
     fn test_user_rename_context_change() {
+        // Context change in sorted/ triggers reprocessing
         let mut record = _make_record();
         record.state = State::IsComplete;
         record.current_paths.push(PathEntry {
@@ -2725,13 +2793,17 @@ mod tests {
 
         let r = result.unwrap();
         assert_eq!(r.context.as_deref(), Some("personal"));
-        assert_eq!(r.assigned_filename.as_deref(), Some("my-custom-name.pdf"));
-        assert_eq!(r.state, State::IsComplete);
-        assert!(r.target_path.is_none());
+        assert!(r.assigned_filename.is_none(), "assigned_filename should be cleared for reprocessing");
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some(), "output_filename should be set for processing");
+        // The sorted file is voided, archive source stays for reprocessing
+        assert!(r.current_paths.is_empty());
+        assert!(r.deleted_paths.contains(&"sorted/personal/my-custom-name.pdf".to_string()));
     }
 
     #[test]
     fn test_user_rename_and_context_change() {
+        // Context change + rename in sorted/ triggers reprocessing
         let mut record = _make_record();
         record.state = State::IsComplete;
         record.current_paths.push(PathEntry {
@@ -2744,10 +2816,81 @@ mod tests {
         let result = reconcile(&mut record, None, None, None);
 
         let r = result.unwrap();
-        assert_eq!(r.assigned_filename.as_deref(), Some("renamed.pdf"));
         assert_eq!(r.context.as_deref(), Some("personal"));
+        assert!(r.assigned_filename.is_none());
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert!(r.output_filename.is_some());
+    }
+
+    #[test]
+    fn test_context_change_with_subfolder_metadata() {
+        // Move from sorted/arbeit/schmidt/file.pdf to sorted/privat/gesundheit/file.pdf
+        // → reprocess with locked context + metadata from subfolders
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.context = Some("arbeit".to_string());
+        record.metadata = Some(serde_json::json!({"sender": "schmidt", "type": "Rechnung"}));
+        record.assigned_filename = Some("arbeit-rechnung-schmidt.pdf".to_string());
+        record.hash = Some("old_hash".to_string());
+        record.current_paths.push(PathEntry {
+            path: "sorted/privat/gesundheit/file.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+        record.source_paths.push(PathEntry {
+            path: "archive/file.pdf".to_string(),
+            timestamp: _ts(-10),
+        });
+
+        let context_folders: HashMap<String, Vec<String>> = [
+            (
+                "arbeit".to_string(),
+                vec!["context".to_string(), "sender".to_string()],
+            ),
+            (
+                "privat".to_string(),
+                vec!["context".to_string(), "content".to_string()],
+            ),
+        ]
+        .into_iter()
+        .collect();
+
+        let result = reconcile(&mut record, None, Some(&context_folders), None);
+
+        let r = result.unwrap();
+        assert_eq!(r.state, State::NeedsProcessing);
+        assert_eq!(r.context.as_deref(), Some("privat"));
+        assert!(r.assigned_filename.is_none());
+        assert!(r.hash.is_none());
+        assert!(r.output_filename.is_some());
+        // Metadata should be fresh from new subfolder, not old
+        let meta = r.metadata.as_ref().expect("metadata should be set");
+        assert_eq!(meta["content"], "gesundheit");
+        assert!(meta.get("sender").is_none(), "old field should not be present");
+        // Current sorted path voided, archive source stays
+        assert!(r.current_paths.is_empty());
+        assert!(r.deleted_paths.contains(&"sorted/privat/gesundheit/file.pdf".to_string()));
+        assert_eq!(r.source_paths.len(), 1);
+        assert_eq!(r.source_paths[0].path, "archive/file.pdf");
+    }
+
+    #[test]
+    fn test_same_context_no_reprocess() {
+        // Move within same context → no reprocessing, just adopt changes
+        let mut record = _make_record();
+        record.state = State::IsComplete;
+        record.context = Some("arbeit".to_string());
+        record.assigned_filename = Some("old-name.pdf".to_string());
+        record.current_paths.push(PathEntry {
+            path: "sorted/arbeit/renamed.pdf".to_string(),
+            timestamp: _ts(0),
+        });
+
+        let result = reconcile(&mut record, None, None, None);
+
+        let r = result.unwrap();
         assert_eq!(r.state, State::IsComplete);
-        assert!(r.target_path.is_none());
+        assert_eq!(r.context.as_deref(), Some("arbeit"));
+        assert_eq!(r.assigned_filename.as_deref(), Some("renamed.pdf"));
     }
 
     #[test]

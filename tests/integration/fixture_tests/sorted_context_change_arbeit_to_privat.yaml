@@ -1,0 +1,22 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: arbeit_vertrag_fischer.pdf
+    path_of_generated_file: generated/arbeit_vertrag_fischer.pdf
+timeout: 10s
+steps:
+  # Step 1: Process file in arbeit context
+  - input:
+      - sorted/arbeit/arbeit_vertrag_fischer.pdf
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-06-01.*\.pdf'
+  # Step 2: Move processed file from arbeit to privat context
+  - input:
+      - move: 'sorted/arbeit/Fischer AG/arbeit-.*2025-06-01.*\.pdf'
+        to: 'sorted/privat/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'sorted/privat/.*/privat-.*2025-06-01.*\.pdf'
+      - '~void/.*/sorted/.*'

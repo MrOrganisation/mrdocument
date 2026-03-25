@@ -1,0 +1,22 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: privat_arztbrief_mueller.pdf
+    path_of_generated_file: generated/privat_arztbrief_mueller.pdf
+timeout: 10s
+steps:
+  # Step 1: Process file in privat context
+  - input:
+      - sorted/privat/privat_arztbrief_mueller.pdf
+    expected:
+      - 'archive/privat_arztbrief_mueller\.pdf'
+      - 'sorted/privat/.*/privat-.*2025-10-15.*\.pdf'
+  # Step 2: Move to arbeit context with locked sender subfolder
+  - input:
+      - move: 'sorted/privat/.*/privat-.*2025-10-15.*\.pdf'
+        to: 'sorted/arbeit/Fischer AG/'
+    expected:
+      - 'archive/privat_arztbrief_mueller\.pdf'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-10-15.*\.pdf'
+      - '~void/.*/sorted/.*'
