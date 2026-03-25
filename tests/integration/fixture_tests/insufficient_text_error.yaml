@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+files:
+  - filename: too_short.txt
+    content: "hi"
+timeout: 10s
+steps:
+  # A text file with < 10 chars triggers "Insufficient text" (422)
+  # and should go to error/ without retries
+  - input:
+      - incoming/too_short.txt
+    expected:
+      - 'error/.*too_short.*'

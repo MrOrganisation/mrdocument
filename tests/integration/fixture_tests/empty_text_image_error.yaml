@@ -1,0 +1,13 @@
+contexts:
+  - arbeit
+files:
+  - filename: blank_image.txt
+    content: ""
+timeout: 10s
+steps:
+  # An empty file triggers "Insufficient text" (422)
+  # and should go to error/ without retries
+  - input:
+      - incoming/blank_image.txt
+    expected:
+      - 'error/.*blank_image.*'

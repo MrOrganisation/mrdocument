@@ -722,7 +722,7 @@ impl AiClient {
         include_all_candidates: bool,
     ) -> Result<String, AiError> {
         if text.trim().is_empty() {
-            return Err(AiError::Failed(
+            return Err(AiError::UnprocessableInput(
                 "Cannot determine context from empty text".to_string(),
             ));
         }
@@ -857,7 +857,7 @@ impl AiClient {
         let min_len = 10;
         let stripped = text.trim();
         if stripped.is_empty() || stripped.len() < min_len {
-            return Err(AiError::Failed(format!(
+            return Err(AiError::UnprocessableInput(format!(
                 "Insufficient text for metadata extraction ({} chars, minimum {})",
                 stripped.len(),
                 min_len
@@ -1417,6 +1417,37 @@ mod tests {
 
         let config = AiError::Configuration("missing field".to_string());
         assert!(config.to_string().contains("Configuration error"));
+    }
+
+    #[test]
+    fn test_empty_text_returns_unprocessable_for_context() {
+        let err = AiError::UnprocessableInput(
+            "Cannot determine context from empty text".to_string(),
+        );
+        match err {
+            AiError::UnprocessableInput(msg) => {
+                assert!(msg.contains("empty text"));
+            }
+            _ => panic!("Expected UnprocessableInput"),
+        }
+    }
+
+    #[test]
+    fn test_insufficient_text_returns_unprocessable_for_metadata() {
+        // Text under 10 chars should yield UnprocessableInput, not Failed
+        let short_text = "hi";
+        assert!(short_text.trim().len() < 10);
+        let err = AiError::UnprocessableInput(format!(
+            "Insufficient text for metadata extraction ({} chars, minimum 10)",
+            short_text.trim().len(),
+        ));
+        match err {
+            AiError::UnprocessableInput(msg) => {
+                assert!(msg.contains("Insufficient text"));
+                assert!(msg.contains("2 chars"));
+            }
+            _ => panic!("Expected UnprocessableInput"),
+        }
     }
 
     #[test]

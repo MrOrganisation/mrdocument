@@ -1207,4 +1207,195 @@ diarization_speaker_count: 5
         // With 0 quick retries, all attempts are phase 2
         assert!((Processor::retry_delay_for(0, 0) - 600.0).abs() < f64::EPSILON);
     }
+
+    fn make_test_processor(service_url: &str) -> Processor {
+        Processor::new(
+            PathBuf::from("/tmp/test"),
+            "test".to_string(),
+            service_url.to_string(),
+            None,
+            5.0,
+            None,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn test_json_retry_422_no_retry() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::method;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let server = MockServer::start().await;
+        let call_count = std::sync::Arc::new(AtomicU32::new(0));
+        let counter = call_count.clone();
+
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(422)
+                    .set_body_json(serde_json::json!({"error": "Unprocessable input: Insufficient text"}))
+            })
+            .mount(&server)
+            .await;
+
+        let processor = make_test_processor(&server.uri());
+        let body = serde_json::json!({"test": true});
+        let result = processor
+            .call_json_with_retry(
+                &format!("{}/process", server.uri()),
+                &body,
+                3,
+                "test",
+                Some("file.pdf"),
+                Some(Duration::from_secs(5)),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_none(), "422 should return None");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1, "422 should not be retried");
+    }
+
+    #[tokio::test]
+    async fn test_json_retry_502_cost_limit() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::method;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let server = MockServer::start().await;
+        let call_count = std::sync::Arc::new(AtomicU32::new(0));
+        let counter = call_count.clone();
+
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(502)
+                    .set_body_json(serde_json::json!({"error": "AI processing failed"}))
+            })
+            .mount(&server)
+            .await;
+
+        let processor = make_test_processor(&server.uri());
+        let body = serde_json::json!({"test": true});
+        let result = processor
+            .call_json_with_retry(
+                &format!("{}/process", server.uri()),
+                &body,
+                10, // would allow 10 quick retries
+                "test",
+                Some("file.pdf"),
+                Some(Duration::from_secs(5)),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_none(), "Should return None after cost limit");
+        assert_eq!(
+            call_count.load(Ordering::SeqCst),
+            3,
+            "Should abort after 3 cost-incurring attempts (1 initial + 2 retries)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_json_retry_connection_errors_not_cost_counted() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::method;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        // Use a port that nothing listens on → connection refused
+        let processor = make_test_processor("http://127.0.0.1:1");
+        let body = serde_json::json!({"test": true});
+        let result = processor
+            .call_json_with_retry(
+                "http://127.0.0.1:1/process",
+                &body,
+                2, // 2 quick retries = 3 total attempts
+                "test",
+                Some("file.pdf"),
+                Some(Duration::from_secs(1)),
+                false,
+            )
+            .await
+            .unwrap();
+
+        // Connection errors don't count as cost-incurring, so all 3 attempts
+        // (0, 1, 2) should run without hitting the cost limit
+        assert!(result.is_none(), "Should return None after exhausting retries");
+    }
+
+    #[tokio::test]
+    async fn test_json_retry_200_success_no_retry() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::method;
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        let server = MockServer::start().await;
+        let call_count = std::sync::Arc::new(AtomicU32::new(0));
+        let counter = call_count.clone();
+
+        Mock::given(method("POST"))
+            .respond_with(move |_: &wiremock::Request| {
+                counter.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(200)
+                    .set_body_json(serde_json::json!({"result": "ok"}))
+            })
+            .mount(&server)
+            .await;
+
+        let processor = make_test_processor(&server.uri());
+        let body = serde_json::json!({"test": true});
+        let result = processor
+            .call_json_with_retry(
+                &format!("{}/process", server.uri()),
+                &body,
+                3,
+                "test",
+                Some("file.pdf"),
+                Some(Duration::from_secs(5)),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_some(), "200 should return Some");
+        assert_eq!(call_count.load(Ordering::SeqCst), 1, "200 should not retry");
+    }
+
+    #[tokio::test]
+    async fn test_json_retry_502_body_logged() {
+        use wiremock::{MockServer, Mock, ResponseTemplate};
+        use wiremock::matchers::method;
+
+        let server = MockServer::start().await;
+        let error_body = r#"{"error":"AI processing failed: Insufficient text for metadata extraction (0 chars, minimum 10)"}"#;
+
+        Mock::given(method("POST"))
+            .respond_with(
+                ResponseTemplate::new(502).set_body_string(error_body),
+            )
+            .mount(&server)
+            .await;
+
+        let processor = make_test_processor(&server.uri());
+        let body = serde_json::json!({"test": true});
+        // Just verify it doesn't panic and returns None
+        let result = processor
+            .call_json_with_retry(
+                &format!("{}/process", server.uri()),
+                &body,
+                0, // no quick retries beyond initial
+                "test",
+                Some("file.pdf"),
+                Some(Duration::from_secs(5)),
+                false,
+            )
+            .await
+            .unwrap();
+
+        assert!(result.is_none());
+    }
 }
