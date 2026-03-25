@@ -186,7 +186,6 @@ pub struct Processor {
     pub name: String,
     pub service_url: String,
     pub stt_url: Option<String>,
-    pub timeout: Duration,
     pub max_retries: u32,
     pub contexts: Option<Vec<serde_json::Value>>,
     pub context_manager: Option<SorterContextManager>,
@@ -200,12 +199,11 @@ impl Processor {
         name: String,
         service_url: String,
         stt_url: Option<String>,
-        timeout: f64,
+        _timeout: f64,
         contexts: Option<Vec<serde_json::Value>>,
         context_manager: Option<SorterContextManager>,
     ) -> Self {
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs_f64(timeout))
             .build()
             .expect("Failed to create HTTP client");
 
@@ -214,7 +212,6 @@ impl Processor {
             name,
             service_url,
             stt_url,
-            timeout: Duration::from_secs_f64(timeout),
             max_retries: 3,
             contexts,
             context_manager,
@@ -427,7 +424,7 @@ impl Processor {
             Ok(form)
         };
 
-        self.call_with_retry(&url, make_form, self.max_retries, "process", Some(&label_filename), Some(self.timeout), true)
+        self.call_with_retry(&url, make_form, self.max_retries, "process", Some(&label_filename), true)
             .await
     }
 
@@ -534,7 +531,7 @@ impl Processor {
             let url = format!("{}/classify_audio", self.service_url);
 
             let result = self
-                .call_json_with_retry(&url, &request_body, 2, "classify_audio", Some(filename), Some(Duration::from_secs(120)), false)
+                .call_json_with_retry(&url, &request_body, 2, "classify_audio", Some(filename), false)
                 .await?;
 
             match result {
@@ -624,9 +621,8 @@ impl Processor {
             Ok(form)
         };
 
-        let timeout = Duration::from_secs(1800);
         let result = self
-            .call_with_retry(&url, make_form, self.max_retries, "stt_transcribe", Some(filename), Some(timeout), true)
+            .call_with_retry(&url, make_form, self.max_retries, "stt_transcribe", Some(filename), true)
             .await?;
 
         Ok(result.and_then(|r| r.get("transcript").cloned()))
@@ -663,7 +659,7 @@ impl Processor {
 
             let url = format!("{}/classify_transcript", self.service_url);
             let ct_result = self
-                .call_json_with_retry(&url, &request_body, 2, "classify_transcript", Some(filename), Some(Duration::from_secs(300)), false)
+                .call_json_with_retry(&url, &request_body, 2, "classify_transcript", Some(filename), false)
                 .await?;
 
             let ct_result = match ct_result {
@@ -802,8 +798,7 @@ impl Processor {
         }
 
         let url = format!("{}/process_transcript", self.service_url);
-        let timeout = Duration::from_secs(1800);
-        self.call_json_with_retry(&url, &request_body, self.max_retries, "process_transcript", Some(filename), Some(timeout), true)
+        self.call_json_with_retry(&url, &request_body, self.max_retries, "process_transcript", Some(filename), true)
             .await
     }
 
@@ -842,7 +837,6 @@ impl Processor {
         quick_retries: u32,
         label: &str,
         source: Option<&str>,
-        timeout: Option<Duration>,
         extended: bool,
     ) -> Result<Option<serde_json::Value>>
     where
@@ -852,7 +846,6 @@ impl Processor {
             Some(s) => format!("{} [{}]", label, s),
             None => label.to_string(),
         };
-        let request_timeout = timeout.unwrap_or(self.timeout);
         let max_long_retries: u32 = if extended { 144 } else { 0 }; // 24h at 10min intervals
         let total_retries = quick_retries + max_long_retries;
         let mut cost_incurring_attempts: u32 = 0;
@@ -862,7 +855,6 @@ impl Processor {
             let result = self
                 .client
                 .post(url)
-                .timeout(request_timeout)
                 .multipart(form)
                 .send()
                 .await;
@@ -887,10 +879,9 @@ impl Processor {
                     }
 
                     warn!(
-                        "{} error (attempt {}/{}): HTTP {} — {}",
+                        "{} error (cost-incurring {}/3): HTTP {} — {}",
                         tag,
-                        attempt + 1,
-                        total_retries + 1,
+                        cost_incurring_attempts,
                         status,
                         body
                     );
@@ -900,15 +891,21 @@ impl Processor {
                     // called the LLM API, so this is cost-incurring.
                     if e.is_timeout() {
                         cost_incurring_attempts += 1;
+                        warn!(
+                            "{} timeout (cost-incurring {}/3): {}",
+                            tag,
+                            cost_incurring_attempts,
+                            format_error_chain(&e)
+                        );
+                    } else {
+                        warn!(
+                            "{} connection error (attempt {}/{}): {}",
+                            tag,
+                            attempt + 1,
+                            total_retries + 1,
+                            format_error_chain(&e)
+                        );
                     }
-                    warn!(
-                        "{} connection error (attempt {}/{}): {}{}",
-                        tag,
-                        attempt + 1,
-                        total_retries + 1,
-                        format_error_chain(&e),
-                        if e.is_timeout() { " [cost-incurring]" } else { "" }
-                    );
                 }
             }
 
@@ -946,14 +943,12 @@ impl Processor {
         quick_retries: u32,
         label: &str,
         source: Option<&str>,
-        timeout: Option<Duration>,
         extended: bool,
     ) -> Result<Option<serde_json::Value>> {
         let tag = match source {
             Some(s) => format!("{} [{}]", label, s),
             None => label.to_string(),
         };
-        let request_timeout = timeout.unwrap_or(self.timeout);
         let max_long_retries: u32 = if extended { 144 } else { 0 };
         let total_retries = quick_retries + max_long_retries;
         let mut cost_incurring_attempts: u32 = 0;
@@ -962,7 +957,6 @@ impl Processor {
             let result = self
                 .client
                 .post(url)
-                .timeout(request_timeout)
                 .json(body)
                 .send()
                 .await;
@@ -987,10 +981,9 @@ impl Processor {
                     }
 
                     warn!(
-                        "{} error (attempt {}/{}): HTTP {} — {}",
+                        "{} error (cost-incurring {}/3): HTTP {} — {}",
                         tag,
-                        attempt + 1,
-                        total_retries + 1,
+                        cost_incurring_attempts,
                         status,
                         resp_body
                     );
@@ -998,15 +991,21 @@ impl Processor {
                 Err(e) => {
                     if e.is_timeout() {
                         cost_incurring_attempts += 1;
+                        warn!(
+                            "{} timeout (cost-incurring {}/3): {}",
+                            tag,
+                            cost_incurring_attempts,
+                            format_error_chain(&e)
+                        );
+                    } else {
+                        warn!(
+                            "{} connection error (attempt {}/{}): {}",
+                            tag,
+                            attempt + 1,
+                            total_retries + 1,
+                            format_error_chain(&e)
+                        );
                     }
-                    warn!(
-                        "{} connection error (attempt {}/{}): {}{}",
-                        tag,
-                        attempt + 1,
-                        total_retries + 1,
-                        format_error_chain(&e),
-                        if e.is_timeout() { " [cost-incurring]" } else { "" }
-                    );
                 }
             }
 
@@ -1270,7 +1269,6 @@ diarization_speaker_count: 5
                 3,
                 "test",
                 Some("file.pdf"),
-                Some(Duration::from_secs(5)),
                 false,
             )
             .await
@@ -1308,7 +1306,6 @@ diarization_speaker_count: 5
                 10, // would allow 10 quick retries
                 "test",
                 Some("file.pdf"),
-                Some(Duration::from_secs(5)),
                 false,
             )
             .await
@@ -1338,7 +1335,6 @@ diarization_speaker_count: 5
                 2, // 2 quick retries = 3 total attempts
                 "test",
                 Some("file.pdf"),
-                Some(Duration::from_secs(1)),
                 false,
             )
             .await
@@ -1377,7 +1373,6 @@ diarization_speaker_count: 5
                 3,
                 "test",
                 Some("file.pdf"),
-                Some(Duration::from_secs(5)),
                 false,
             )
             .await
@@ -1412,7 +1407,6 @@ diarization_speaker_count: 5
                 0, // no quick retries beyond initial
                 "test",
                 Some("file.pdf"),
-                Some(Duration::from_secs(5)),
                 false,
             )
             .await
