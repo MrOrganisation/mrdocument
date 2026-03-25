@@ -901,7 +901,7 @@ impl Processor {
                         tag,
                         attempt + 1,
                         total_retries + 1,
-                        e
+                        format_error_chain(&e)
                     );
                 }
             }
@@ -995,7 +995,7 @@ impl Processor {
                         tag,
                         attempt + 1,
                         total_retries + 1,
-                        e
+                        format_error_chain(&e)
                     );
                 }
             }
@@ -1023,6 +1023,18 @@ impl Processor {
         error!("{} all retry attempts exhausted", tag);
         Ok(None)
     }
+}
+
+/// Format an error with its full cause chain.
+fn format_error_chain(err: &dyn std::error::Error) -> String {
+    let mut msg = err.to_string();
+    let mut source = err.source();
+    while let Some(cause) = source {
+        msg.push_str(": ");
+        msg.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    msg
 }
 
 /// Create a 0-byte file (touch).

@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use tracing::{debug, error, info, warn};
@@ -18,16 +19,30 @@ pub struct CostTracker {
     filename: String,
     pricing: PricingConfig,
     queue: Mutex<Vec<CostRecord>>,
+    api_log: Mutex<Option<std::fs::File>>,
 }
 
 impl CostTracker {
     pub fn new() -> Self {
         let pricing = load_pricing(None);
-        info!("CostTracker initialized");
+        let api_log_file = std::env::var("LOG_DIR")
+            .ok()
+            .map(|dir| {
+                let path = PathBuf::from(dir).join("api_calls.log");
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .map_err(|e| warn!("Failed to open API call log {:?}: {}", path, e))
+                    .ok()
+            })
+            .flatten();
+        info!("CostTracker initialized (api_log={})", api_log_file.is_some());
         Self {
             filename: "mrdocument_costs.json".to_string(),
             pricing,
             queue: Mutex::new(Vec::new()),
+            api_log: Mutex::new(api_log_file),
         }
     }
 
@@ -53,6 +68,47 @@ impl CostTracker {
             model, input_tokens, output_tokens, count_document
         );
         self.flush();
+    }
+
+    /// Log an API call with truncated request body to the api_calls.log file.
+    pub fn log_api_call(
+        &self,
+        operation: &str,
+        model: &str,
+        filename: Option<&str>,
+        request_body: &serde_json::Value,
+        input_tokens: u64,
+        output_tokens: u64,
+        user_dir: &Path,
+    ) {
+        let cost = self.calculate_cost(model, input_tokens, output_tokens);
+
+        // Truncate each string field in the request body to 10 chars
+        let truncated = truncate_json_fields(request_body, 10);
+
+        let timestamp = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ");
+        let fname = filename.unwrap_or("-");
+        let username = extract_username(user_dir);
+
+        let line = format!(
+            "{} | {} | {} | {} | {} | in={} out={} | cost=${:.6} | body={}\n",
+            timestamp,
+            username,
+            operation,
+            model,
+            fname,
+            input_tokens,
+            output_tokens,
+            cost,
+            truncated,
+        );
+
+        if let Ok(mut guard) = self.api_log.lock() {
+            if let Some(ref mut file) = *guard {
+                let _ = file.write_all(line.as_bytes());
+                let _ = file.flush();
+            }
+        }
     }
 
     pub fn flush(&self) {
@@ -210,6 +266,63 @@ impl CostTracker {
             warn!("No pricing found for model: {}", model);
             0.0
         }
+    }
+}
+
+/// Extract username from a user_dir path (looks for `/sync/{username}` pattern).
+fn extract_username(user_dir: &Path) -> String {
+    let mut current = Some(user_dir);
+    while let Some(path) = current {
+        if let Some(parent) = path.parent() {
+            if parent.file_name().map(|n| n == "sync").unwrap_or(false)
+                || parent == Path::new("/sync")
+            {
+                return path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+            }
+        }
+        current = path.parent();
+    }
+    user_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("unknown")
+        .to_string()
+}
+
+/// Truncate string values in a JSON value to `max_len` chars for logging.
+fn truncate_json_fields(value: &serde_json::Value, max_len: usize) -> String {
+    match value {
+        Value::Object(map) => {
+            let entries: Vec<String> = map
+                .iter()
+                .map(|(k, v)| format!("{}: {}", k, truncate_json_fields(v, max_len)))
+                .collect();
+            format!("{{{}}}", entries.join(", "))
+        }
+        Value::Array(arr) => {
+            let items: Vec<String> = arr
+                .iter()
+                .take(3)
+                .map(|v| truncate_json_fields(v, max_len))
+                .collect();
+            if arr.len() > 3 {
+                format!("[{}, ...+{}]", items.join(", "), arr.len() - 3)
+            } else {
+                format!("[{}]", items.join(", "))
+            }
+        }
+        Value::String(s) => {
+            if s.len() > max_len {
+                format!("\"{}...\"", &s[..max_len])
+            } else {
+                format!("\"{}\"", s)
+            }
+        }
+        other => other.to_string(),
     }
 }
 

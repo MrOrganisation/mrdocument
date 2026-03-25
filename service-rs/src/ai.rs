@@ -799,6 +799,15 @@ impl AiClient {
                                 ud,
                                 true,
                             );
+                            get_cost_tracker().log_api_call(
+                                "determine_context",
+                                &model.name,
+                                filename,
+                                &json!({"text_len": text.len()}),
+                                input,
+                                output,
+                                ud,
+                            );
                         }
                     }
 
@@ -1053,6 +1062,15 @@ impl AiClient {
                                 output,
                                 ud,
                                 false,
+                            );
+                            get_cost_tracker().log_api_call(
+                                "extract_metadata",
+                                &model.name,
+                                filename,
+                                &json!({"context": context_name, "text_len": text.len()}),
+                                input,
+                                output,
+                                ud,
                             );
                         }
                     }

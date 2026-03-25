@@ -170,6 +170,7 @@ pub async fn correct_transcript_json(
     context: &str,
     _use_batch: bool,
     user_dir: Option<&std::path::Path>,
+    filename: Option<&str>,
 ) -> Result<Value, String> {
     let key = api_key
         .map(|s| s.to_string())
@@ -257,6 +258,15 @@ pub async fn correct_transcript_json(
                 if input_t > 0 || output_t > 0 {
                     crate::costs::get_cost_tracker().record_anthropic(
                         model, input_t, output_t, ud, false,
+                    );
+                    crate::costs::get_cost_tracker().log_api_call(
+                        "correct_transcript",
+                        model,
+                        filename,
+                        &serde_json::json!({"segments": text_array.len()}),
+                        input_t,
+                        output_t,
+                        ud,
                     );
                 }
             }

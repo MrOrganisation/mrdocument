@@ -736,11 +736,12 @@ async fn process_transcript_handler(
         &correction_context,
         state.correction_use_batch,
         user_dir.as_deref(),
+        Some(&filename),
     ).await {
         Ok(j) => j,
         Err(e) => {
             error!("Transcript correction failed: {}", e);
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": format!("Internal error: {}", e)})));
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("Transcript correction failed: {}", e)})));
         }
     };
 
