@@ -1,5 +1,6 @@
 """HTTP API for STT transcription service."""
 
+import asyncio
 import json
 import logging
 import os
@@ -96,7 +97,7 @@ async def transcribe(
         if needs_conversion(tmp_path):
             logger.info("Converting %s to FLAC (uploaded as %s, %d bytes)...",
                         suffix, file.filename, len(content))
-            converted_path = convert_to_flac(tmp_path)
+            converted_path = await asyncio.to_thread(convert_to_flac, tmp_path)
             process_path = converted_path
             logger.info("Conversion complete: %s (%d bytes)",
                         converted_path.name, converted_path.stat().st_size)
@@ -111,11 +112,13 @@ async def transcribe(
             except json.JSONDecodeError as e:
                 raise HTTPException(status_code=400, detail=f"Invalid keyterms JSON: {e}")
 
-        # ElevenLabs transcription
+        # ElevenLabs transcription (sync backend — run in thread to avoid
+        # blocking the event loop so other requests can be served concurrently)
         logger.info(f"Transcribing with ElevenLabs ({elevenlabs_model})...")
         try:
             backend = ElevenLabsBackend(model=elevenlabs_model)
-            job = backend.transcribe(
+            job = await asyncio.to_thread(
+                backend.transcribe,
                 audio_path=process_path,
                 language=language,
                 enable_diarization=enable_diarization,
