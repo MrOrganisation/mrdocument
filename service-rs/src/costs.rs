@@ -49,9 +49,10 @@ impl CostTracker {
             });
         }
         debug!(
-            "Queued Anthropic usage: model={}, in={}, out={}, count_doc={}",
+            "Recorded Anthropic usage: model={}, in={}, out={}, count_doc={}",
             model, input_tokens, output_tokens, count_document
         );
+        self.flush();
     }
 
     pub fn flush(&self) {

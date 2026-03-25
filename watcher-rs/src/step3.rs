@@ -855,6 +855,7 @@ impl Processor {
         let request_timeout = timeout.unwrap_or(self.timeout);
         let max_long_retries: u32 = if extended { 144 } else { 0 }; // 24h at 10min intervals
         let total_retries = quick_retries + max_long_retries;
+        let mut cost_incurring_attempts: u32 = 0;
 
         for attempt in 0..=total_retries {
             let form = make_form()?;
@@ -875,17 +876,23 @@ impl Processor {
                         return Ok(Some(body));
                     }
 
+                    let body = response.text().await.unwrap_or_default();
+
+                    // Any non-connection error from the service likely incurred costs
+                    cost_incurring_attempts += 1;
+
                     if status < 500 && status != 429 {
-                        error!("{} client error: HTTP {}", tag, status);
+                        error!("{} client error: HTTP {} — {}", tag, status, body);
                         return Ok(None);
                     }
 
                     warn!(
-                        "{} error (attempt {}/{}): HTTP {}",
+                        "{} error (attempt {}/{}): HTTP {} — {}",
                         tag,
                         attempt + 1,
                         total_retries + 1,
-                        status
+                        status,
+                        body
                     );
                 }
                 Err(e) => {
@@ -897,6 +904,14 @@ impl Processor {
                         e
                     );
                 }
+            }
+
+            if cost_incurring_attempts >= 3 {
+                error!(
+                    "{} aborting after {} cost-incurring failures",
+                    tag, cost_incurring_attempts
+                );
+                return Ok(None);
             }
 
             if attempt < total_retries {
@@ -935,6 +950,7 @@ impl Processor {
         let request_timeout = timeout.unwrap_or(self.timeout);
         let max_long_retries: u32 = if extended { 144 } else { 0 };
         let total_retries = quick_retries + max_long_retries;
+        let mut cost_incurring_attempts: u32 = 0;
 
         for attempt in 0..=total_retries {
             let result = self
@@ -954,17 +970,23 @@ impl Processor {
                         return Ok(Some(json_body));
                     }
 
+                    let resp_body = response.text().await.unwrap_or_default();
+
+                    // Any non-connection error from the service likely incurred costs
+                    cost_incurring_attempts += 1;
+
                     if status < 500 && status != 429 {
-                        error!("{} client error: HTTP {}", tag, status);
+                        error!("{} client error: HTTP {} — {}", tag, status, resp_body);
                         return Ok(None);
                     }
 
                     warn!(
-                        "{} error (attempt {}/{}): HTTP {}",
+                        "{} error (attempt {}/{}): HTTP {} — {}",
                         tag,
                         attempt + 1,
                         total_retries + 1,
-                        status
+                        status,
+                        resp_body
                     );
                 }
                 Err(e) => {
@@ -976,6 +998,14 @@ impl Processor {
                         e
                     );
                 }
+            }
+
+            if cost_incurring_attempts >= 3 {
+                error!(
+                    "{} aborting after {} cost-incurring failures",
+                    tag, cost_incurring_attempts
+                );
+                return Ok(None);
             }
 
             if attempt < total_retries {
