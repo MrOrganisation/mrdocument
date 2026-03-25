@@ -896,12 +896,18 @@ impl Processor {
                     );
                 }
                 Err(e) => {
+                    // Timeouts mean the request was sent — the service likely
+                    // called the LLM API, so this is cost-incurring.
+                    if e.is_timeout() {
+                        cost_incurring_attempts += 1;
+                    }
                     warn!(
-                        "{} connection error (attempt {}/{}): {}",
+                        "{} connection error (attempt {}/{}): {}{}",
                         tag,
                         attempt + 1,
                         total_retries + 1,
-                        format_error_chain(&e)
+                        format_error_chain(&e),
+                        if e.is_timeout() { " [cost-incurring]" } else { "" }
                     );
                 }
             }
@@ -990,12 +996,16 @@ impl Processor {
                     );
                 }
                 Err(e) => {
+                    if e.is_timeout() {
+                        cost_incurring_attempts += 1;
+                    }
                     warn!(
-                        "{} connection error (attempt {}/{}): {}",
+                        "{} connection error (attempt {}/{}): {}{}",
                         tag,
                         attempt + 1,
                         total_retries + 1,
-                        format_error_chain(&e)
+                        format_error_chain(&e),
+                        if e.is_timeout() { " [cost-incurring]" } else { "" }
                     );
                 }
             }

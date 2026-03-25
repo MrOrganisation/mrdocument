@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use tracing::{info, warn};
+use tracing::info;
 
 // =============================================================================
 // Quote normalization
@@ -212,9 +212,26 @@ pub async fn correct_transcript_json(
         prompt, text_json
     );
 
+    // Estimate output tokens needed: ~1 token per 4 chars of text + JSON overhead
+    let estimated_output_tokens = (text_json.len() / 3) as u64;
+    let output_budget = estimated_output_tokens.max(16000).min(128000);
+    let max_tokens = if extended_thinking {
+        output_budget + thinking_budget as u64
+    } else {
+        output_budget
+    };
+
+    info!(
+        "Token budget: max_tokens={} (output={}, thinking={})",
+        max_tokens,
+        output_budget,
+        if extended_thinking { thinking_budget } else { 0 }
+    );
+
     let mut params = json!({
         "model": model,
-        "max_tokens": 64000,
+        "max_tokens": max_tokens,
+        "stream": true,
         "messages": [{"role": "user", "content": user_content}],
     });
 
@@ -225,72 +242,46 @@ pub async fn correct_transcript_json(
         });
     }
 
-    // Call API with retry on parse failure (up to 3 attempts)
     let client = reqwest::Client::new();
-    params["stream"] = json!(true);
-    let max_attempts = 3u32;
-    let mut last_parse_error = String::new();
 
-    let (corrected_texts, order) = 'retry: {
-        for attempt in 0..max_attempts {
-            let response = client
-                .post(format!("{}/v1/messages", base_url))
-                .header("x-api-key", &key)
-                .header("anthropic-version", "2023-06-01")
-                .header("content-type", "application/json")
-                .json(&params)
-                .send()
-                .await
-                .map_err(|e| format!("API request failed: {}", e))?;
+    let response = client
+        .post(format!("{}/v1/messages", base_url))
+        .header("x-api-key", &key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&params)
+        .send()
+        .await
+        .map_err(|e| format!("API request failed: {}", e))?;
 
-            if !response.status().is_success() {
-                let body = response.text().await.unwrap_or_default();
-                return Err(format!("API error: {}", body));
-            }
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("API error: {}", body));
+    }
 
-            let body = response.text().await.map_err(|e| format!("Read error: {}", e))?;
+    let body = response.text().await.map_err(|e| format!("Read error: {}", e))?;
+    let response_text = parse_sse_text(&body);
 
-            // Parse SSE to extract text response
-            let response_text = parse_sse_text(&body);
-
-            if let Some(ud) = user_dir {
-                let (input_t, output_t) = parse_sse_usage(&body);
-                if input_t > 0 || output_t > 0 {
-                    crate::costs::get_cost_tracker().record_anthropic(
-                        model, input_t, output_t, ud, false,
-                    );
-                    crate::costs::get_cost_tracker().log_api_call(
-                        "correct_transcript",
-                        model,
-                        filename,
-                        &serde_json::json!({"segments": text_array.len()}),
-                        input_t,
-                        output_t,
-                        ud,
-                    );
-                }
-            }
-
-            match parse_correction_result(&response_text, text_array.len()) {
-                Ok(result) => break 'retry result,
-                Err(e) => {
-                    last_parse_error = e;
-                    if attempt + 1 < max_attempts {
-                        warn!(
-                            "Correction parse failed (attempt {}/{}): {}, retrying",
-                            attempt + 1,
-                            max_attempts,
-                            last_parse_error
-                        );
-                    }
-                }
-            }
+    if let Some(ud) = user_dir {
+        let (input_t, output_t) = parse_sse_usage(&body);
+        if input_t > 0 || output_t > 0 {
+            crate::costs::get_cost_tracker().record_anthropic(
+                model, input_t, output_t, ud, false,
+            );
+            crate::costs::get_cost_tracker().log_api_call(
+                "correct_transcript",
+                model,
+                filename,
+                &serde_json::json!({"segments": text_array.len()}),
+                input_t,
+                output_t,
+                ud,
+            );
         }
-        return Err(format!(
-            "Failed to parse corrected JSON after {} attempts: {}",
-            max_attempts, last_parse_error
-        ));
-    };
+    }
+
+    let (corrected_texts, order) =
+        parse_correction_result(&response_text, text_array.len())?;
 
     // Reorder if needed
     let reordered_segments = if let Some(order) = &order {
