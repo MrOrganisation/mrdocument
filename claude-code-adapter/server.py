@@ -270,8 +270,10 @@ def _invoke_claude(prompt, system_prompt, model):
 
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
-        log.error("claude CLI failed (rc=%d): %s", proc.returncode, stderr)
-        raise RuntimeError(f"claude CLI exited with code {proc.returncode}: {stderr}")
+        stdout = proc.stdout.strip()
+        detail = stderr or stdout or "(no output)"
+        log.error("claude CLI failed (rc=%d): %s", proc.returncode, detail)
+        raise RuntimeError(f"claude CLI exited with code {proc.returncode}: {detail}")
 
     output = json.loads(proc.stdout)
     result_text = output.get("result", "")
