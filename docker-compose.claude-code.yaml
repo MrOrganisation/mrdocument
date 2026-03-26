@@ -17,7 +17,7 @@ services:
     image: claude-code-adapter:latest-custom
     environment:
       LOG_LEVEL: INFO
-      CLI_TIMEOUT: 300
+      CLI_TIMEOUT: 3600
     volumes:
       - ~/.claude:/root/.claude:ro
     healthcheck:
