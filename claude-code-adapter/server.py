@@ -27,7 +27,7 @@ logging.basicConfig(
 log = logging.getLogger("claude-code-adapter")
 
 CLAUDE_BINARY = os.environ.get("CLAUDE_BINARY", "claude")
-CLI_TIMEOUT = int(os.environ.get("CLI_TIMEOUT", "3600"))
+CLI_TIMEOUT = int(os.environ.get("CLI_TIMEOUT", "14400"))
 
 
 # ---------------------------------------------------------------------------

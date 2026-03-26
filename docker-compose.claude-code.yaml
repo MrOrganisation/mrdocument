@@ -17,7 +17,7 @@ services:
     image: claude-code-adapter:latest-custom
     environment:
       LOG_LEVEL: INFO
-      CLI_TIMEOUT: 3600
+      CLI_TIMEOUT: 14400
     volumes:
       - ~/.claude/.credentials.json:/home/node/.claude/.credentials.json:ro
     healthcheck:

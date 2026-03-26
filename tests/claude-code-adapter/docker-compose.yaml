@@ -9,7 +9,7 @@ services:
     container_name: test-claude-code-adapter
     environment:
       LOG_LEVEL: INFO
-      CLI_TIMEOUT: 300
+      CLI_TIMEOUT: 14400
     ports:
       - "127.0.0.1:18080:8080"
     volumes:

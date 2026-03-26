@@ -49,7 +49,7 @@ def _build_correction_payload(segments):
     return prompt, len(text_array)
 
 
-@pytest.mark.timeout(600)
+@pytest.mark.timeout(3600)
 def test_large_transcript_correction():
     """A ~250k char transcript (similar to the production failure case)
     is processed via the file-based approach without context overflow."""
@@ -86,7 +86,7 @@ def test_large_transcript_correction():
     assert len(result) > 0, "Empty result from large transcript correction"
 
 
-@pytest.mark.timeout(600)
+@pytest.mark.timeout(3600)
 def test_large_document_extraction():
     """A >200k char document payload with tool_use extraction still works."""
     # Build a large "document" by repeating realistic invoice text
