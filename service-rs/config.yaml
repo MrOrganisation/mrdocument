@@ -26,7 +26,7 @@ models:
     max_tokens: 1024
     extended_thinking: true
     thinking_budget: 20000
-  - name: claude-opus-4-6
+  - name: claude-opus-4-6[1M]
     max_tokens: 1024
     extended_thinking: true
     thinking_budget: 20000
@@ -131,7 +131,7 @@ context_tool_description: |
 
 transcript_correction:
   # Model to use for transcript correction
-  model: claude-opus-4-6
+  model: claude-opus-4-6[1M]
   # Enable extended thinking for better correction quality
   extended_thinking: true
   # Token budget for extended thinking
