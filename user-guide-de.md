@@ -27,6 +27,7 @@ mrdocument/
   sorted/         <-- Endablage, nach Kontext organisiert
   archive/        <-- Originaldateien (dauerhafte Aufbewahrung)
   reset/          <-- Verarbeitete Dateien hier ablegen zum Neu-Einsortieren
+  reclassify/     <-- Dateien hier ablegen zur erneuten KI-Klassifizierung
   error/          <-- Dateien, deren Verarbeitung fehlgeschlagen ist
   duplicates/     <-- Duplikate von Quelldateien
   trash/          <-- Dateien hier ablegen zum Loeschen
@@ -68,6 +69,7 @@ Sie koennen den Ueberpruefungsschritt ueberspringen, indem Sie Dateien direkt in
 | `archive/` | Nur-Lese-Referenz | Speichert alle Originaldateien dauerhaft. |
 | `trash/` | Dateien hier ablegen zum Loeschen | Verschiebt alle zugehoerigen Dateien nach `void/` und entfernt den Datensatz. |
 | `reset/` | Verarbeitete Dateien hier ablegen | Loest Neuberechnung des Dateinamens und Neu-Einsortierung in `sorted/` aus. |
+| `reclassify/` | Quell- oder verarbeitete Dateien hier ablegen | Fuehrt die vollstaendige KI-Klassifizierung erneut durch. Die Datei wird anhand des Hashwerts einem bestehenden Datensatz zugeordnet. |
 | `error/` | Fehlgeschlagene Dateien pruefen | Nicht verarbeitbare Dateien landen hier. Zurueck nach `incoming/` verschieben zum Wiederholen. |
 | `duplicates/` | Duplikate pruefen | Wenn dieselbe Quelldatei mehrfach erscheint, kommen Kopien hierhin. |
 
@@ -81,10 +83,25 @@ Wenn Sie moechten, dass MrDocument den Dateinamen neu berechnet und eine Datei n
 
 Dies ist nuetzlich nach Aenderungen an der Kontext-Konfiguration (z.B. neue Felder oder Namensmuster) -- Sie koennen Dateien zuruecksetzen, um aktualisierte Dateinamen zu erhalten, ohne sie erneut durch die KI verarbeiten zu lassen.
 
+### Neu-Klassifizieren (vollstaendige Neuverarbeitung)
+
+Wenn Sie moechten, dass MrDocument die KI-Klassifizierung einer Datei komplett neu durchfuehrt:
+
+1. Kopieren Sie die Quelldatei (aus `archive/`) oder die verarbeitete Datei (aus `processed/` oder `sorted/`) nach `reclassify/`.
+2. MrDocument ordnet die Datei anhand ihres Hashwerts einem bestehenden Datensatz zu.
+3. Der bestehende Datensatz wird zurueckgesetzt und die Datei durchlaeuft erneut die vollstaendige KI-Verarbeitung.
+4. Das Ergebnis wird wie gewohnt in `sorted/` einsortiert.
+
+**Zuruecksetzen vs. Neu-Klassifizieren:**
+- **`reset/`** berechnet den Dateinamen aus vorhandenen Metadaten neu -- kein KI-Aufruf, nuetzlich nach Konfigurationsaenderungen.
+- **`reclassify/`** fuehrt die vollstaendige KI-Klassifizierung erneut durch -- nuetzlich, wenn die urspruengliche Klassifizierung falsch war.
+
+Wenn die Datei keinem bestehenden Datensatz zugeordnet werden kann, wird sie nach `error/` verschoben.
+
 ### Umbenennung und Wiederherstellung
 
 - Wenn Sie **eine Datei in `sorted/` umbenennen**, uebernimmt MrDocument den neuen Dateinamen.
-- Wenn Sie **eine Datei in einen anderen Kontextordner** in `sorted/` verschieben, aktualisiert MrDocument den Kontext.
+- Wenn Sie **eine Datei in einen anderen Kontextordner** in `sorted/` verschieben, fuehrt MrDocument die vollstaendige KI-Klassifizierung fuer den neuen Kontext erneut durch.
 - Wenn eine verarbeitete Datei aus `sorted/` **verschwindet**, markiert MrDocument sie als fehlend. Taucht die Datei wieder auf, wird sie automatisch erkannt.
 - Wenn die Verarbeitung **fehlschlaegt**, wird die Quelldatei nach `error/` verschoben. Verschieben Sie sie zurueck nach `incoming/` zum Wiederholen.
 

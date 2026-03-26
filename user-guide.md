@@ -27,6 +27,7 @@ mrdocument/
   sorted/         <-- Final destination, organized by context
   archive/        <-- Original source files (permanent storage)
   reset/          <-- Drop processed files here to re-sort them
+  reclassify/     <-- Drop files here to re-run AI classification
   error/          <-- Files that failed processing
   duplicates/     <-- Duplicate copies of source files
   trash/          <-- Drop files here to delete them
@@ -68,6 +69,7 @@ You can bypass the review step by dropping files directly into `sorted/`:
 | `archive/` | Read-only reference | Stores all original source files permanently. |
 | `trash/` | Move files here to delete | Moves all associated files to `void/` and removes the record. |
 | `reset/` | Drop processed files here | Triggers filename recomputation and re-sorting into `sorted/`. |
+| `reclassify/` | Drop source or processed files here | Re-runs the full AI classification from scratch. The file is matched to an existing record by hash. |
 | `error/` | Check failed files | Files that couldn't be processed end up here. You can move them back to `incoming/` to retry. |
 | `duplicates/` | Check for duplicates | When the same source file appears multiple times, extras go here. |
 
@@ -81,10 +83,25 @@ If you want MrDocument to recompute the filename and re-sort a file:
 
 This is useful after changing your context configuration (e.g., adding new fields or renaming patterns) -- you can reset files to get updated filenames without reprocessing them through the AI.
 
+### Reclassify (Full Re-Processing)
+
+If you want MrDocument to completely re-run the AI classification on a file:
+
+1. Copy the source file (from `archive/`) or the processed file (from `processed/` or `sorted/`) into `reclassify/`.
+2. MrDocument matches the file to an existing record by its hash.
+3. The existing record is reset and the file is sent through the full AI processing pipeline again.
+4. The result is sorted into `sorted/` as usual.
+
+**Reset vs. Reclassify:**
+- **`reset/`** recomputes the filename from existing metadata -- no AI call, useful after config changes.
+- **`reclassify/`** re-runs the full AI classification from scratch -- useful when the original classification was wrong.
+
+If the file cannot be matched to an existing record, it is moved to `error/`.
+
 ### File Rename and Recovery
 
 - If you **rename a file in `sorted/`**, MrDocument adopts your new filename.
-- If you **move a file to a different context folder** in `sorted/`, MrDocument updates the context.
+- If you **move a file to a different context folder** in `sorted/`, MrDocument re-runs the full AI classification for the new context.
 - If a processed file **disappears** from `sorted/`, MrDocument marks it as missing. If the file reappears, it's automatically recognized.
 - If processing **fails**, the source file is moved to `error/`. You can move it back to `incoming/` to retry.
 
