@@ -1,0 +1,25 @@
+# Override file that swaps the Anthropic API adapter for the Claude Code CLI adapter.
+#
+# Usage:
+#   docker compose -f docker-compose.yaml -f docker-compose.claude-code.yaml up
+#
+# Prerequisites:
+#   - Valid Claude Code credentials at ~/.claude/ on the host
+#     (run `claude` locally and authenticate first)
+
+services:
+  anthropic-adapter:
+    build:
+      context: .
+      dockerfile: Dockerfile.claude-code-adapter
+      cache_from:
+        - localhost:5000/claude-code-adapter:latest
+    image: claude-code-adapter:latest-custom
+    environment:
+      LOG_LEVEL: INFO
+      CLI_TIMEOUT: 300
+    volumes:
+      - ~/.claude:/root/.claude:ro
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
+      start_period: 15s
