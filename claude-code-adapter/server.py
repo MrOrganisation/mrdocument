@@ -275,14 +275,45 @@ def _invoke_claude(prompt, system_prompt, model):
         log.error("claude CLI failed (rc=%d): %s", proc.returncode, detail)
         raise RuntimeError(f"claude CLI exited with code {proc.returncode}: {detail}")
 
-    output = json.loads(proc.stdout)
+    try:
+        output = json.loads(proc.stdout)
+    except json.JSONDecodeError:
+        log.error(
+            "claude CLI returned non-JSON  stdout=%.500s  stderr=%.500s",
+            proc.stdout.strip(), proc.stderr.strip(),
+        )
+        raise RuntimeError(
+            f"claude CLI returned non-JSON output: {proc.stdout[:500]}"
+        )
+
     result_text = output.get("result", "")
     cost_usd = output.get("cost_usd", 0.0)
+    is_error = output.get("is_error", False)
 
     log.info(
-        "claude CLI responded  result_len=%d  cost=$%.6f",
-        len(result_text), cost_usd,
+        "claude CLI responded  result_len=%d  cost=$%.6f  is_error=%s  "
+        "duration_ms=%s  num_turns=%s  session=%s",
+        len(result_text), cost_usd, is_error,
+        output.get("duration_ms"), output.get("num_turns"),
+        output.get("session_id", "")[:12],
     )
+
+    if is_error:
+        log.error("claude CLI reported error: %s", result_text)
+        raise RuntimeError(f"claude CLI error: {result_text or '(empty error)'}")
+
+    if not result_text:
+        log.error(
+            "claude CLI returned empty result  full_output=%s",
+            json.dumps(output, indent=2),
+        )
+        raise RuntimeError(
+            f"claude CLI returned empty result. "
+            f"Session: {output.get('session_id', 'unknown')}, "
+            f"turns: {output.get('num_turns', '?')}, "
+            f"subtype: {output.get('subtype', '?')}"
+        )
+
     return result_text, cost_usd
 
 
