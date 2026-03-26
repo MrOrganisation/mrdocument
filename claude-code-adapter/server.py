@@ -251,7 +251,7 @@ def _invoke_claude(payload, system_prompt, model):
         CLAUDE_BINARY, "--print",
         "--output-format", "json",
         "--model", model,
-        "--max-turns", "1",
+        "--tools", "",
         "--system-prompt", system_prompt,
     ]
 

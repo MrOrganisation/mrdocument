@@ -1,15 +1,19 @@
-"""Tests for large payloads that exceed the model's context window when
-passed inline.  These verify that the file-based approach works for
-transcript correction and large document extraction.
+"""Tests for large payloads that require a model with >200k context.
+
+These use claude-opus-4-6[1M] (1M context window) since the payloads
+exceed what haiku/sonnet can handle.
 """
 
 import json
+import os
 import random
 import string
 
 import pytest
 
 from conftest import TEST_MODEL
+
+LARGE_MODEL = os.environ.get("LARGE_MODEL", "claude-opus-4-6[1M]")
 
 
 def _make_transcript_segments(n_segments, chars_per_segment=200):
@@ -61,7 +65,7 @@ def test_large_transcript_correction():
     r = requests.post(
         f"{ADAPTER_URL}/v1/messages",
         json={
-            "model": TEST_MODEL,
+            "model": LARGE_MODEL,
             "max_tokens": 128000,
             "stream": True,
             "messages": [{"role": "user", "content": payload}],
@@ -131,7 +135,7 @@ def test_large_document_extraction():
     r = requests.post(
         f"{ADAPTER_URL}/v1/messages",
         json={
-            "model": TEST_MODEL,
+            "model": LARGE_MODEL,
             "max_tokens": 512,
             "system": "You are a document metadata extraction assistant.",
             "messages": [{"role": "user", "content": f"Extract metadata from this document:\n\n{large_doc}"}],
