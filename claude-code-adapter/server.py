@@ -16,6 +16,7 @@ import logging
 import os
 import re
 import subprocess
+import tempfile
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -75,15 +76,15 @@ class ClaudeCodeHandler(BaseHTTPRequestHandler):
 
     def _handle_messages(self, request):
         model = request.get("model", "sonnet")
-        system_prompt = request.get("system", "")
+        caller_system = request.get("system", "")
         messages = request.get("messages", [])
         tools = request.get("tools", [])
         tool_choice = request.get("tool_choice", {})
 
-        user_message = _extract_user_message(messages)
-        prompt = _build_prompt(user_message, tools, tool_choice)
-        result_text, cost_usd = _invoke_claude(prompt, system_prompt, model)
-        return _build_response(result_text, model, tools, cost_usd, len(prompt))
+        payload = _extract_user_message(messages)
+        system_prompt = _build_system_prompt(caller_system, tools)
+        result_text, cost_usd = _invoke_claude(payload, system_prompt, model)
+        return _build_response(result_text, model, tools, cost_usd, len(payload))
 
     # --- response helpers ---
 
@@ -200,73 +201,102 @@ def _extract_user_message(messages):
     return "\n\n".join(parts)
 
 
-def _build_prompt(user_message, tools, tool_choice):
+def _build_system_prompt(caller_system, tools):
+    """Build the system prompt from the caller's system prompt and tool schema.
+
+    The system prompt always exists and tells Claude its role and output format.
+    The payload (user message) is stored separately in a file.
     """
-    When tools are present, embed the tool schema in the prompt so that the
-    model responds with a JSON object matching the schema.
-    """
-    if not tools:
-        return user_message
+    parts = []
 
-    tool = tools[0]
-    tool_name = tool["name"]
-    tool_desc = tool.get("description", "")
-    schema = tool.get("input_schema", {})
-    properties = schema.get("properties", {})
-    required = schema.get("required", [])
+    if caller_system:
+        parts.append(caller_system.strip())
 
-    instruction = (
-        f"\n\n---\n"
-        f"INSTRUCTION: You must call the '{tool_name}' tool.\n"
-        f"Tool description: {tool_desc}\n\n"
-        f"Respond with ONLY a valid JSON object with these properties:\n"
-        f"{json.dumps(properties, indent=2)}\n\n"
-        f"Required fields: {json.dumps(required)}\n\n"
-        f"IMPORTANT: Output ONLY the raw JSON object. "
-        f"No markdown code fences, no explanation, no text before or after the JSON."
-    )
+    if tools:
+        tool = tools[0]
+        tool_name = tool["name"]
+        tool_desc = tool.get("description", "")
+        schema = tool.get("input_schema", {})
+        properties = schema.get("properties", {})
+        required = schema.get("required", [])
 
-    return user_message + instruction
+        parts.append(
+            f"You must call the '{tool_name}' tool.\n"
+            f"Tool description: {tool_desc}\n\n"
+            f"Respond with ONLY a valid JSON object with these properties:\n"
+            f"{json.dumps(properties, indent=2)}\n\n"
+            f"Required fields: {json.dumps(required)}\n\n"
+            f"Output ONLY the raw JSON object. "
+            f"No markdown code fences, no explanation, no text before or after the JSON."
+        )
+
+    if not parts:
+        parts.append(
+            "Process the provided file and follow the instructions in it exactly."
+        )
+
+    return "\n\n".join(parts)
 
 
 # ---------------------------------------------------------------------------
 # Claude CLI invocation
 # ---------------------------------------------------------------------------
 
-def _invoke_claude(prompt, system_prompt, model):
-    """Run the claude CLI and return (result_text, cost_usd)."""
-    cmd = [
-        CLAUDE_BINARY, "--print",
-        "--output-format", "json",
-        "--model", model,
-        "--max-turns", "1",
-    ]
-    if system_prompt:
-        cmd.extend(["--system-prompt", system_prompt])
+def _invoke_claude(payload, system_prompt, model):
+    """Run the claude CLI and return (result_text, cost_usd).
 
-    log.info(
-        "Invoking claude CLI  model=%s  prompt_len=%d  system_len=%d  timeout=%ds",
-        model, len(prompt), len(system_prompt), CLI_TIMEOUT,
-    )
-
+    The payload is always written to a temporary file.  The CLI receives
+    a short user prompt pointing at the file and a system prompt with
+    the role / output-format instructions.  This keeps the conversation
+    context small and avoids exceeding the model's context window.
+    """
+    fd, temp_path = tempfile.mkstemp(suffix=".md", prefix="claude_input_", dir="/tmp")
     try:
-        proc = subprocess.run(
-            cmd,
-            input=prompt,
-            capture_output=True,
-            text=True,
-            timeout=CLI_TIMEOUT,
+        with os.fdopen(fd, "w") as f:
+            f.write(payload)
+
+        user_prompt = (
+            f"Read the file {temp_path} and process its contents."
         )
-    except subprocess.TimeoutExpired as exc:
-        stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
-        stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
-        log.error(
-            "claude CLI timed out after %ds  stderr=%s  stdout=%.500s",
-            CLI_TIMEOUT, stderr, stdout,
+
+        cmd = [
+            CLAUDE_BINARY, "--print",
+            "--output-format", "json",
+            "--model", model,
+            "--max-turns", "5",
+            "--allowedTools", "Read",
+            "--system-prompt", system_prompt,
+        ]
+
+        log.info(
+            "Invoking claude CLI  model=%s  payload_len=%d  system_len=%d  "
+            "file=%s  timeout=%ds",
+            model, len(payload), len(system_prompt), temp_path, CLI_TIMEOUT,
         )
-        raise RuntimeError(
-            f"claude CLI timed out after {CLI_TIMEOUT}s. stderr: {stderr}"
-        ) from exc
+
+        try:
+            proc = subprocess.run(
+                cmd,
+                input=user_prompt,
+                capture_output=True,
+                text=True,
+                timeout=CLI_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+            stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
+            log.error(
+                "claude CLI timed out after %ds  stderr=%s  stdout=%.500s",
+                CLI_TIMEOUT, stderr, stdout,
+            )
+            raise RuntimeError(
+                f"claude CLI timed out after {CLI_TIMEOUT}s. stderr: {stderr}"
+            ) from exc
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
 
     if proc.returncode != 0:
         stderr = proc.stderr.strip()

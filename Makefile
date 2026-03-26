@@ -4,6 +4,7 @@
        push \
        release \
        test test-unit test-integration test-integration-syncthing \
+       test-claude-code-adapter \
        peek-watcher peek-service peek-anthropic-adapter peek-stt \
        dump-db
 
@@ -171,6 +172,24 @@ test: test-unit test-integration
 # --- Unit tests (Rust) ---
 test-unit:
 	cd watcher-rs && cargo test -- --nocapture
+
+# --- Claude Code adapter tests (live, requires valid ~/.claude credentials) ---
+ADAPTER_TEST_COMPOSE := docker compose -f tests/claude-code-adapter/docker-compose.yaml
+test-claude-code-adapter:
+	@echo "Building claude-code-adapter..."
+	$(ADAPTER_TEST_COMPOSE) build
+	@echo "Starting claude-code-adapter..."
+	$(ADAPTER_TEST_COMPOSE) up -d
+	@echo "Waiting for adapter health..."
+	@curl --retry 30 --retry-delay 1 --retry-all-errors -sf http://localhost:18080/health >/dev/null
+	@echo "Running tests..."
+	@cd tests/claude-code-adapter && pip install -q requests pytest pytest-timeout && \
+	pytest . -v --timeout=300 2>&1; \
+	EXIT_CODE=$$?; \
+	cd ../.. ; \
+	echo "Stopping claude-code-adapter..." ; \
+	$(ADAPTER_TEST_COMPOSE) down ; \
+	exit $$EXIT_CODE
 
 # --- Integration tests ---
 # Run the watcher container as the current host user to avoid permission issues
