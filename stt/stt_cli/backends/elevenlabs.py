@@ -129,7 +129,7 @@ class ElevenLabsBackend(Backend):
                     headers=self._get_headers(),
                     files=files,
                     data=data,
-                    timeout=300,  # 5 minute timeout for upload
+                    timeout=1800,  # 30 minute timeout for long audio files
                 )
                 response.raise_for_status()
             except requests.exceptions.HTTPError as e:
