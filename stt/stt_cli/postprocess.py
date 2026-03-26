@@ -310,7 +310,7 @@ def _extract_response_json(message, expect_array: bool = False) -> str:
 def correct_json_light(
     transcript_json: dict,
     api_key: Optional[str] = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-opus-4-6",
     extended_thinking: bool = True,
     thinking_budget: int = 50000,
     use_batch: bool = True,
@@ -700,7 +700,7 @@ def _correct_chunk(
 def correct_transcript(
     transcript_json: dict,
     api_key: Optional[str] = None,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = "claude-opus-4-6",
     extended_thinking: bool = True,
     thinking_budget: int = 50000,
     auto_chunk: bool = True,

@@ -27,7 +27,7 @@ logging.basicConfig(
 log = logging.getLogger("claude-code-adapter")
 
 CLAUDE_BINARY = os.environ.get("CLAUDE_BINARY", "claude")
-CLI_TIMEOUT = int(os.environ.get("CLI_TIMEOUT", "300"))
+CLI_TIMEOUT = int(os.environ.get("CLI_TIMEOUT", "3600"))
 
 
 # ---------------------------------------------------------------------------
@@ -235,22 +235,38 @@ def _build_prompt(user_message, tools, tool_choice):
 
 def _invoke_claude(prompt, system_prompt, model):
     """Run the claude CLI and return (result_text, cost_usd)."""
-    cmd = [CLAUDE_BINARY, "--print", "--output-format", "json", "--model", model]
+    cmd = [
+        CLAUDE_BINARY, "--print",
+        "--output-format", "json",
+        "--model", model,
+        "--max-turns", "1",
+    ]
     if system_prompt:
         cmd.extend(["--system-prompt", system_prompt])
 
     log.info(
-        "Invoking claude CLI  model=%s  prompt_len=%d  system_len=%d",
-        model, len(prompt), len(system_prompt),
+        "Invoking claude CLI  model=%s  prompt_len=%d  system_len=%d  timeout=%ds",
+        model, len(prompt), len(system_prompt), CLI_TIMEOUT,
     )
 
-    proc = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=CLI_TIMEOUT,
-    )
+    try:
+        proc = subprocess.run(
+            cmd,
+            input=prompt,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired as exc:
+        stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+        stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
+        log.error(
+            "claude CLI timed out after %ds  stderr=%s  stdout=%.500s",
+            CLI_TIMEOUT, stderr, stdout,
+        )
+        raise RuntimeError(
+            f"claude CLI timed out after {CLI_TIMEOUT}s. stderr: {stderr}"
+        ) from exc
 
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
