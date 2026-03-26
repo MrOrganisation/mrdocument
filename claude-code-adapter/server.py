@@ -16,7 +16,6 @@ import logging
 import os
 import re
 import subprocess
-import tempfile
 import uuid
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
@@ -245,58 +244,40 @@ def _build_system_prompt(caller_system, tools):
 def _invoke_claude(payload, system_prompt, model):
     """Run the claude CLI and return (result_text, cost_usd).
 
-    The payload is always written to a temporary file.  The CLI receives
-    a short user prompt pointing at the file and a system prompt with
-    the role / output-format instructions.  This keeps the conversation
-    context small and avoids exceeding the model's context window.
+    The payload is passed directly via stdin.  The system prompt carries
+    the role and output-format instructions via --system-prompt.
     """
-    fd, temp_path = tempfile.mkstemp(suffix=".md", prefix="claude_input_", dir="/tmp")
+    cmd = [
+        CLAUDE_BINARY, "--print",
+        "--output-format", "json",
+        "--model", model,
+        "--max-turns", "1",
+        "--system-prompt", system_prompt,
+    ]
+
+    log.info(
+        "Invoking claude CLI  model=%s  payload_len=%d  system_len=%d  timeout=%ds",
+        model, len(payload), len(system_prompt), CLI_TIMEOUT,
+    )
+
     try:
-        with os.fdopen(fd, "w") as f:
-            f.write(payload)
-
-        user_prompt = (
-            f"Read the file {temp_path} and process its contents."
+        proc = subprocess.run(
+            cmd,
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=CLI_TIMEOUT,
         )
-
-        cmd = [
-            CLAUDE_BINARY, "--print",
-            "--output-format", "json",
-            "--model", model,
-            "--max-turns", "10",
-            "--allowedTools", "Read,Bash,Write",
-            "--system-prompt", system_prompt,
-        ]
-
-        log.info(
-            "Invoking claude CLI  model=%s  payload_len=%d  system_len=%d  "
-            "file=%s  timeout=%ds",
-            model, len(payload), len(system_prompt), temp_path, CLI_TIMEOUT,
+    except subprocess.TimeoutExpired as exc:
+        stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+        stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
+        log.error(
+            "claude CLI timed out after %ds  stderr=%s  stdout=%.500s",
+            CLI_TIMEOUT, stderr, stdout,
         )
-
-        try:
-            proc = subprocess.run(
-                cmd,
-                input=user_prompt,
-                capture_output=True,
-                text=True,
-                timeout=CLI_TIMEOUT,
-            )
-        except subprocess.TimeoutExpired as exc:
-            stderr = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
-            stdout = (exc.stdout or "").strip() if isinstance(exc.stdout, str) else ""
-            log.error(
-                "claude CLI timed out after %ds  stderr=%s  stdout=%.500s",
-                CLI_TIMEOUT, stderr, stdout,
-            )
-            raise RuntimeError(
-                f"claude CLI timed out after {CLI_TIMEOUT}s. stderr: {stderr}"
-            ) from exc
-    finally:
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            pass
+        raise RuntimeError(
+            f"claude CLI timed out after {CLI_TIMEOUT}s. stderr: {stderr}"
+        ) from exc
 
     if proc.returncode != 0:
         stderr = proc.stderr.strip()
