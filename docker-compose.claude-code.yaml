@@ -19,7 +19,7 @@ services:
       LOG_LEVEL: INFO
       CLI_TIMEOUT: 3600
     volumes:
-      - ~/.claude:/root/.claude:ro
+      - ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       start_period: 15s

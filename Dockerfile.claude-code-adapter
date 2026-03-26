@@ -6,6 +6,9 @@ RUN apt-get update && \
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# Minimal config so the CLI doesn't complain about missing ~/.claude.json
+RUN echo '{"hasCompletedOnboarding":true}' > /root/.claude.json
+
 COPY claude-code-adapter/server.py /app/server.py
 
 WORKDIR /app
