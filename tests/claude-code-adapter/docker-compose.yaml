@@ -13,7 +13,7 @@ services:
     ports:
       - "127.0.0.1:18080:8080"
     volumes:
-      - ~/.claude/.credentials.json:/root/.claude/.credentials.json:ro
+      - ~/.claude/.credentials.json:/home/node/.claude/.credentials.json:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       start_period: 15s

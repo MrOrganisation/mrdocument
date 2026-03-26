@@ -6,8 +6,11 @@ RUN apt-get update && \
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# Run as non-root user (node user comes with the base image)
+USER node
+
 # Minimal config so the CLI doesn't complain about missing ~/.claude.json
-RUN echo '{"hasCompletedOnboarding":true}' > /root/.claude.json
+RUN echo '{"hasCompletedOnboarding":true}' > /home/node/.claude.json
 
 COPY claude-code-adapter/server.py /app/server.py
 
