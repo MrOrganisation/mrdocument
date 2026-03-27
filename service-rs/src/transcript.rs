@@ -160,51 +160,73 @@ Additional context for this transcription:
 
 Use this context to help identify and correct names, technical terms, and domain-specific vocabulary."#;
 
-/// Correct transcript JSON using Anthropic API.
-pub async fn correct_transcript_json(
-    transcript_json: &Value,
-    api_key: Option<&str>,
+/// Max output tokens the model can produce in one response.
+const MAX_OUTPUT_TOKENS: usize = 48_000;
+
+/// Rough chars-per-token estimate for token budgeting.
+const CHARS_PER_TOKEN: usize = 4;
+
+const CHUNK_CONTINUATION_PROMPT: &str = r#"This is a continuation of a longer transcript correction task.
+
+Summary of the preceding portion of the transcript:
+{summary}
+
+Apply the same correction rules as before. Maintain consistency with names, terms, and style from the preceding portion."#;
+
+const SUMMARIZE_PROMPT: &str = r#"Summarize the following corrected transcript chunk in at most 500 words. Focus on:
+- Names of people, places, and organizations mentioned (with correct spellings)
+- Key topics and technical terms discussed
+- The general flow / narrative so far
+- Any recurring terms that were corrected
+
+Return ONLY the summary text, no JSON.
+
+Corrected text:
+"#;
+
+/// Estimate token count from a string (~4 chars per token).
+fn estimate_tokens(s: &str) -> usize {
+    s.len() / CHARS_PER_TOKEN
+}
+
+/// Split text_array indices into even chunks that each fit within the output token limit.
+fn compute_chunks(text_array: &[String]) -> Vec<std::ops::Range<usize>> {
+    let total_tokens: usize = text_array.iter().map(|s| estimate_tokens(s)).sum();
+
+    if total_tokens <= MAX_OUTPUT_TOKENS {
+        return vec![0..text_array.len()];
+    }
+
+    let num_chunks = (total_tokens + MAX_OUTPUT_TOKENS - 1) / MAX_OUTPUT_TOKENS;
+    let chunk_size = (text_array.len() + num_chunks - 1) / num_chunks;
+
+    (0..text_array.len())
+        .step_by(chunk_size)
+        .map(|start| start..text_array.len().min(start + chunk_size))
+        .collect()
+}
+
+/// Send a single chunk of text segments to the API for correction.
+async fn correct_chunk(
+    client: &reqwest::Client,
+    base_url: &str,
+    key: &str,
     model: &str,
     extended_thinking: bool,
     thinking_budget: u32,
-    context: &str,
-    _use_batch: bool,
+    base_prompt: &str,
+    previous_summary: Option<&str>,
+    text_array: &[String],
     user_dir: Option<&std::path::Path>,
     filename: Option<&str>,
-) -> Result<Value, String> {
-    let key = api_key
-        .map(|s| s.to_string())
-        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
-        .ok_or_else(|| "Anthropic API key not set".to_string())?;
-
-    let base_url = std::env::var("ANTHROPIC_BASE_URL")
-        .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
-
-    let segments = transcript_json
-        .get("segments")
-        .and_then(|v| v.as_array())
-        .cloned()
-        .unwrap_or_default();
-
-    let text_array: Vec<String> = segments
-        .iter()
-        .map(|seg| {
-            normalize_quotes(seg.get("text").and_then(|v| v.as_str()).unwrap_or(""))
-        })
-        .collect();
-
-    let text_json = serde_json::to_string_pretty(&text_array)
+) -> Result<(Vec<String>, Option<Vec<u64>>), String> {
+    let text_json = serde_json::to_string_pretty(text_array)
         .map_err(|e| format!("JSON error: {}", e))?;
 
-    info!(
-        "Sending {} text segments for correction (~{} chars)",
-        text_array.len(),
-        text_json.len()
-    );
-
-    let mut prompt = CORRECTION_PROMPT.to_string();
-    if !context.trim().is_empty() {
-        prompt.push_str(&CONTEXT_TEMPLATE.replace("{context}", context.trim()));
+    let mut prompt = base_prompt.to_string();
+    if let Some(summary) = previous_summary {
+        prompt.push_str("\n\n");
+        prompt.push_str(&CHUNK_CONTINUATION_PROMPT.replace("{summary}", summary));
     }
 
     let user_content = format!(
@@ -212,7 +234,6 @@ pub async fn correct_transcript_json(
         prompt, text_json
     );
 
-    // Estimate output tokens needed: ~1 token per 4 chars of text + JSON overhead
     let estimated_output_tokens = (text_json.len() / 3) as u64;
     let output_budget = estimated_output_tokens.max(16000).min(128000);
     let max_tokens = if extended_thinking {
@@ -220,13 +241,6 @@ pub async fn correct_transcript_json(
     } else {
         output_budget
     };
-
-    info!(
-        "Token budget: max_tokens={} (output={}, thinking={})",
-        max_tokens,
-        output_budget,
-        if extended_thinking { thinking_budget } else { 0 }
-    );
 
     let mut params = json!({
         "model": model,
@@ -242,11 +256,9 @@ pub async fn correct_transcript_json(
         });
     }
 
-    let client = reqwest::Client::new();
-
     let response = client
         .post(format!("{}/v1/messages", base_url))
-        .header("x-api-key", &key)
+        .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
         .header("content-type", "application/json")
         .json(&params)
@@ -280,16 +292,172 @@ pub async fn correct_transcript_json(
         }
     }
 
-    let (corrected_texts, order) =
-        parse_correction_result(&response_text, text_array.len())?;
+    parse_correction_result(&response_text, text_array.len())
+}
 
-    // Reorder if needed
-    let reordered_segments = if let Some(order) = &order {
+/// Ask the model to summarize a corrected chunk for context continuity.
+async fn summarize_chunk(
+    client: &reqwest::Client,
+    base_url: &str,
+    key: &str,
+    model: &str,
+    corrected_texts: &[String],
+) -> Result<String, String> {
+    let joined = corrected_texts.join("\n");
+    let user_content = format!("{}{}", SUMMARIZE_PROMPT, joined);
+
+    let params = json!({
+        "model": model,
+        "max_tokens": 2048,
+        "stream": true,
+        "messages": [{"role": "user", "content": user_content}],
+    });
+
+    let response = client
+        .post(format!("{}/v1/messages", base_url))
+        .header("x-api-key", key)
+        .header("anthropic-version", "2023-06-01")
+        .header("content-type", "application/json")
+        .json(&params)
+        .send()
+        .await
+        .map_err(|e| format!("Summarize request failed: {}", e))?;
+
+    if !response.status().is_success() {
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("Summarize API error: {}", body));
+    }
+
+    let body = response.text().await.map_err(|e| format!("Read error: {}", e))?;
+    Ok(parse_sse_text(&body))
+}
+
+/// Correct transcript JSON using Anthropic API.
+///
+/// Large transcripts are automatically split into even chunks that fit
+/// within the model's output token limit.  Each chunk after the first
+/// receives a summary of the preceding chunk for context continuity.
+pub async fn correct_transcript_json(
+    transcript_json: &Value,
+    api_key: Option<&str>,
+    model: &str,
+    extended_thinking: bool,
+    thinking_budget: u32,
+    context: &str,
+    _use_batch: bool,
+    user_dir: Option<&std::path::Path>,
+    filename: Option<&str>,
+) -> Result<Value, String> {
+    let key = api_key
+        .map(|s| s.to_string())
+        .or_else(|| std::env::var("ANTHROPIC_API_KEY").ok())
+        .ok_or_else(|| "Anthropic API key not set".to_string())?;
+
+    let base_url = std::env::var("ANTHROPIC_BASE_URL")
+        .unwrap_or_else(|_| "https://api.anthropic.com".to_string());
+
+    let segments = transcript_json
+        .get("segments")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    let text_array: Vec<String> = segments
+        .iter()
+        .map(|seg| {
+            normalize_quotes(seg.get("text").and_then(|v| v.as_str()).unwrap_or(""))
+        })
+        .collect();
+
+    let mut base_prompt = CORRECTION_PROMPT.to_string();
+    if !context.trim().is_empty() {
+        base_prompt.push_str(&CONTEXT_TEMPLATE.replace("{context}", context.trim()));
+    }
+
+    let chunks = compute_chunks(&text_array);
+
+    info!(
+        "Correcting {} segments in {} chunk(s) (~{} chars total)",
+        text_array.len(),
+        chunks.len(),
+        text_array.iter().map(|s| s.len()).sum::<usize>(),
+    );
+
+    let client = reqwest::Client::new();
+    let mut all_corrected: Vec<String> = vec![String::new(); text_array.len()];
+    let mut all_order: Option<Vec<u64>> = None;
+    let mut previous_summary: Option<String> = None;
+
+    for (chunk_idx, range) in chunks.iter().enumerate() {
+        let chunk_texts = &text_array[range.clone()];
+
+        info!(
+            "Chunk {}/{}: segments {}..{} ({} segments, ~{} chars)",
+            chunk_idx + 1,
+            chunks.len(),
+            range.start,
+            range.end,
+            chunk_texts.len(),
+            chunk_texts.iter().map(|s| s.len()).sum::<usize>(),
+        );
+
+        let (corrected, order) = correct_chunk(
+            &client,
+            &base_url,
+            &key,
+            model,
+            extended_thinking,
+            thinking_budget,
+            &base_prompt,
+            previous_summary.as_deref(),
+            chunk_texts,
+            user_dir,
+            filename,
+        )
+        .await?;
+
+        // Only the first chunk may reorder (meta info at end → beginning)
+        if chunk_idx == 0 {
+            all_order = order;
+        }
+
+        // Place corrected texts at original indices
+        for (i, text) in corrected.into_iter().enumerate() {
+            let global_idx = range.start + i;
+            if global_idx < all_corrected.len() {
+                all_corrected[global_idx] = text;
+            }
+        }
+
+        // Summarize this chunk for the next one (skip last chunk)
+        if chunk_idx + 1 < chunks.len() {
+            let chunk_corrected: Vec<String> = (range.start..range.end)
+                .filter_map(|i| all_corrected.get(i).cloned())
+                .collect();
+            match summarize_chunk(&client, &base_url, &key, model, &chunk_corrected).await {
+                Ok(summary) => {
+                    info!("Generated summary for chunk {} ({} chars)", chunk_idx + 1, summary.len());
+                    previous_summary = Some(summary);
+                }
+                Err(e) => {
+                    info!("Summary generation failed (continuing without): {}", e);
+                    previous_summary = None;
+                }
+            }
+        }
+    }
+
+    // Reorder if needed (first chunk only)
+    let reordered_segments = if let Some(order) = &all_order {
         info!("Reordering {} segments", order.len());
-        order
+        // The order applies to the first chunk's indices only; append remaining as-is
+        let first_chunk_end = chunks[0].end;
+        let mut reordered: Vec<Value> = order
             .iter()
             .filter_map(|&idx| segments.get(idx as usize).cloned())
-            .collect()
+            .collect();
+        reordered.extend(segments[first_chunk_end..].iter().cloned());
+        reordered
     } else {
         segments
     };
@@ -299,8 +467,9 @@ pub async fn correct_transcript_json(
         .iter()
         .enumerate()
         .map(|(i, seg)| {
-            let text = corrected_texts
+            let text = all_corrected
                 .get(i)
+                .filter(|s| !s.is_empty())
                 .cloned()
                 .unwrap_or_else(|| seg.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string());
             json!({
