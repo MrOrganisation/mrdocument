@@ -13,7 +13,9 @@ from .loader import (
     CopyFromTreeAction,
     DeleteAction,
     FixtureSpec,
+    MkdirAction,
     MoveAction,
+    SleepAction,
     StartWatcherAction,
     StepSpec,
     StopWatcherAction,
@@ -75,6 +77,10 @@ class FixtureRunner:
                 self._delete_file(action)
             elif isinstance(action, CopyFromTreeAction):
                 self._copy_from_tree(action)
+            elif isinstance(action, MkdirAction):
+                self._mkdir(action)
+            elif isinstance(action, SleepAction):
+                time.sleep(action.seconds)
             elif isinstance(action, StopWatcherAction):
                 self._stop_watcher()
             elif isinstance(action, StartWatcherAction):
@@ -164,6 +170,10 @@ class FixtureRunner:
         tmp = dest.with_suffix(dest.suffix + ".tmp")
         shutil.copyfile(str(src), str(tmp))
         os.rename(str(tmp), str(dest))
+
+    def _mkdir(self, action: MkdirAction):
+        """Create a directory."""
+        (self.sync_folder / action.path).mkdir(parents=True, exist_ok=True)
 
     def _stop_watcher(self):
         """Stop the watcher container."""

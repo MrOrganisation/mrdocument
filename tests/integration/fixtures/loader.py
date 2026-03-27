@@ -40,6 +40,16 @@ class CopyFromTreeAction:
 
 
 @dataclass
+class MkdirAction:
+    path: str
+
+
+@dataclass
+class SleepAction:
+    seconds: float
+
+
+@dataclass
 class StopWatcherAction:
     pass
 
@@ -49,7 +59,7 @@ class StartWatcherAction:
     pass
 
 
-InputAction = Union[CopyAction, MoveAction, DeleteAction, CopyFromTreeAction, StopWatcherAction, StartWatcherAction]
+InputAction = Union[CopyAction, MoveAction, DeleteAction, CopyFromTreeAction, MkdirAction, SleepAction, StopWatcherAction, StartWatcherAction]
 
 
 @dataclass
@@ -104,6 +114,10 @@ def _parse_input(raw, files: dict[str, FileRef]) -> InputAction:
             return DeleteAction(pattern=raw["delete"])
         if "copy_match" in raw:
             return CopyFromTreeAction(pattern=raw["copy_match"], to=raw["to"])
+        if "mkdir" in raw:
+            return MkdirAction(path=raw["mkdir"])
+        if "sleep" in raw:
+            return SleepAction(seconds=float(raw["sleep"]))
     if raw == "stop_watcher":
         return StopWatcherAction()
     if raw == "start_watcher":

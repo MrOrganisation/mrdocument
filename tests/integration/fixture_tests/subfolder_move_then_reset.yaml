@@ -1,0 +1,38 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_vertrag_fischer.pdf
+    path_of_generated_file: generated/arbeit_vertrag_fischer.pdf
+timeout: 15s
+steps:
+  # Step 1: Process via incoming → processed with sender "Fischer AG"
+  - input:
+      - incoming/arbeit_vertrag_fischer.pdf
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'processed/arbeit-.*2025-06-01.*fischer.*\.pdf'
+  # Step 2: Move to reviewed → sorted/arbeit/Fischer AG/
+  - input:
+      - move: 'processed/arbeit-.*2025-06-01.*fischer.*\.pdf'
+        to: 'reviewed/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'sorted/arbeit/Fischer AG/arbeit-.*2025-06-01.*fischer.*\.pdf'
+  # Step 3: Move from Fischer AG to Schulze GmbH subfolder (new directory).
+  # Watcher detects via full scan, updates sender metadata to "Schulze GmbH".
+  - input:
+      - move: 'sorted/arbeit/Fischer AG/arbeit-.*2025-06-01.*\.pdf'
+        to: 'sorted/arbeit/Schulze GmbH/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'sorted/arbeit/Schulze GmbH/arbeit-.*2025-06-01.*\.pdf'
+  # Step 4: Wait for watcher to process the subfolder move, then reset.
+  - input:
+      - sleep: 3
+      - move: 'sorted/arbeit/Schulze GmbH/arbeit-.*2025-06-01.*\.pdf'
+        to: 'reset/'
+    expected:
+      - 'archive/arbeit_vertrag_fischer\.pdf'
+      - 'sorted/arbeit/Schulze GmbH/arbeit-.*2025-06-01.*schulze.*\.pdf'
+      - '~void/.*/reset/.*'
+      - '~void/.*/sorted/.*'
