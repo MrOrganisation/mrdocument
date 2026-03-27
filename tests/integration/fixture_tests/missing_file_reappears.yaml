@@ -1,0 +1,33 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: missing_test_doc.txt
+    content: "Test document missing_test_doc. Unique: yaml-fixture-missing-reappear"
+timeout: 300s
+steps:
+  # Step 1: Process through incoming
+  - input:
+      - incoming/missing_test_doc.txt
+    expected:
+      - 'archive/missing_test_doc\.txt'
+      - 'processed/privat-.*2025-12-15.*\.txt'
+  # Step 2: Move to reviewed → sorted
+  - input:
+      - move: 'processed/privat-.*2025-12-15.*\.txt'
+        to: 'reviewed/'
+    expected:
+      - 'archive/missing_test_doc\.txt'
+      - 'sorted/privat/.*/privat-.*2025-12-15.*\.txt'
+  # Step 3: Delete from sorted → source moves to missing
+  - input:
+      - delete: 'sorted/privat/.*/privat-.*2025-12-15.*\.txt'
+    expected:
+      - 'missing/.*missing_test_doc.*'
+  # Step 4: Put the file back into sorted → source should return to archive
+  - input:
+      - copy_match: 'missing/.*missing_test_doc.*'
+        to: 'sorted/privat/gesundheit/'
+    expected:
+      - 'archive/missing_test_doc\.txt'
+      - 'sorted/privat/gesundheit/.*missing_test_doc.*'

@@ -519,12 +519,22 @@ fn handle_addition<F>(
         record.source_reference = None;
         record.current_reference = None;
 
-        if live_source.is_some() {
-            // Case 1: source already in archive — go straight to NeedsProcessing
-            // to avoid reconcile's IsNew handler which would set source_reference
-            // and try to move the archive file to itself.
-            record.output_filename = Some(Uuid::new_v4().to_string());
-            record.state = State::NeedsProcessing;
+        if let Some(ref ls) = live_source {
+            // Case 1: source exists outside reclassify/ — just a trigger.
+            // If the source ended up in missing/ (race: sorted file deleted
+            // before reclassify was detected), move it back to archive/.
+            let (ls_loc, _, _) = decompose_path(&ls.path);
+            if ls_loc == "missing" {
+                record.source_reference = Some(ls.path.clone());
+                record.state = State::IsNew;
+                record.output_filename = None;
+            } else {
+                // Source already in archive — go straight to NeedsProcessing
+                // to avoid reconcile's IsNew handler which would set source_reference
+                // and try to move the archive file to itself.
+                record.output_filename = Some(Uuid::new_v4().to_string());
+                record.state = State::NeedsProcessing;
+            }
         } else {
             // Case 2: source in reclassify/ — use IsNew so reconcile moves it
             // to archive and assigns output_filename.
@@ -1015,6 +1025,19 @@ pub fn reconcile<'a>(
     if record.state == State::IsMissing {
         record.state = State::IsComplete;
         // If source was moved to missing/, restore it to archive/
+        if let Some(sf) = record.source_file() {
+            let (sf_loc, _, _) = decompose_path(&sf.path);
+            if sf_loc == "missing" {
+                record.source_reference = Some(sf.path.clone());
+            }
+        }
+    }
+
+    // Ensure source is in archive/ for any complete record.
+    // After a reclassify race (sorted deleted → source moved to missing/ →
+    // reclassify reprocesses → IsComplete with source still in missing/),
+    // the source_reference mechanism moves it back.
+    if record.state == State::IsComplete && record.source_reference.is_none() {
         if let Some(sf) = record.source_file() {
             let (sf_loc, _, _) = decompose_path(&sf.path);
             if sf_loc == "missing" {
@@ -4927,5 +4950,69 @@ mod tests {
         assert_eq!(r.source_paths[0].path, "archive/doc.pdf");
         // Reclassify file is trigger → in deleted_paths
         assert!(r.deleted_paths.contains(&"reclassify/output.pdf".to_string()));
+    }
+
+    #[test]
+    fn test_reclassify_source_in_missing_moved_back_to_archive() {
+        // Race condition: sorted file was deleted in a previous cycle,
+        // causing the source to be moved from archive/ to missing/.
+        // Now a reclassify file appears.  The source in missing/ should
+        // be moved back to archive/ (via source_reference + IsNew).
+        let mut record = _make_record();
+        record.source_hash = "src_hash_race".to_string();
+        record.hash = Some("out_hash_race".to_string());
+        record.state = State::IsMissing;
+        record.context = Some("arbeit".to_string());
+        record.metadata = Some(json!({"type": "Rechnung"}));
+        record.assigned_filename = Some("arbeit-rechnung.pdf".to_string());
+        // Source was moved to missing/ by a previous cycle
+        record.source_paths.push(PathEntry {
+            path: "missing/file.pdf".to_string(),
+            timestamp: _ts(-3),
+        });
+        // Original sorted path is in missing_current_paths
+        record.missing_current_paths.push(PathEntry {
+            path: "sorted/arbeit/arbeit-rechnung.pdf".to_string(),
+            timestamp: _ts(-5),
+        });
+        let record_id = record.id;
+
+        let mut records = vec![record];
+        let mut new_records: Vec<Record> = Vec::new();
+        let change = _make_change(
+            EventType::Addition,
+            "reclassify/file.pdf",
+            Some("src_hash_race"),
+            Some(1024),
+        );
+
+        let (modified_ids, _created, rejected) = preprocess(
+            &[change],
+            &mut records,
+            &mut new_records,
+            _noop_sidecar,
+            None,
+            None,
+        );
+
+        assert!(rejected.is_empty());
+        assert!(modified_ids.contains(&record_id));
+
+        let r = &records[0];
+        // Source is in missing/ → should use IsNew so reconcile moves it back to archive/
+        assert_eq!(r.state, State::IsNew);
+        assert!(r.output_filename.is_none());
+        // source_reference should point to the missing/ path for step4 to move
+        assert_eq!(r.source_reference.as_deref(), Some("missing/file.pdf"));
+        // Source path still listed (will be updated by step4 after move)
+        assert_eq!(r.source_paths.len(), 1);
+        assert_eq!(r.source_paths[0].path, "missing/file.pdf");
+        // Record was fully reset
+        assert!(r.context.is_none());
+        assert!(r.metadata.is_none());
+        assert!(r.assigned_filename.is_none());
+        assert!(r.hash.is_none());
+        // Reclassify trigger in deleted_paths
+        assert!(r.deleted_paths.contains(&"reclassify/file.pdf".to_string()));
     }
 }

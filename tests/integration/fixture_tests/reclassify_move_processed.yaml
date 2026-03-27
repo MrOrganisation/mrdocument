@@ -1,24 +1,32 @@
 contexts:
   - arbeit
+  - privat
 files:
   - filename: arbeit_rechnung_schulze.pdf
     path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
-timeout: 10s
+timeout: 300s
 steps:
-  # Step 1: Initial processing
+  # Step 1: Process through incoming
   - input:
       - incoming/arbeit_rechnung_schulze.pdf
     expected:
       - 'archive/arbeit_rechnung_schulze\.pdf'
       - 'processed/arbeit-.*2025-03-15.*\.pdf'
-  # Step 2: Move (not copy) processed file to reclassify/
-  # The processed file disappears — watcher matches by hash against the
-  # existing record, finds the archive source, and reprocesses.
+  # Step 2: Move to reviewed → sorted
   - input:
       - move: 'processed/arbeit-.*2025-03-15.*\.pdf'
+        to: 'reviewed/'
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'sorted/arbeit/.*/arbeit-.*2025-03-15.*\.pdf'
+  # Step 3: Move sorted file to reclassify/ (not copy — simulates user action).
+  # The sorted file disappears, triggering IsMissing detection.
+  # The reclassify file triggers reprocessing.
+  # After reprocessing, the source must be back in archive/, not stuck in missing/.
+  - input:
+      - move: 'sorted/arbeit/.*/arbeit-.*2025-03-15.*\.pdf'
         to: 'reclassify/'
     expected:
       - 'archive/arbeit_rechnung_schulze\.pdf'
       - 'processed/arbeit-.*2025-03-15.*\.pdf'
       - '~void/.*/reclassify/.*'
-      - '~void/.*/processed/.*'
