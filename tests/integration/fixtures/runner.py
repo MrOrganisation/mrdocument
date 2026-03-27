@@ -6,15 +6,26 @@ import shutil
 import time
 from pathlib import Path
 
+import subprocess as _subprocess
+
 from .loader import (
     CopyAction,
     CopyFromTreeAction,
     DeleteAction,
     FixtureSpec,
     MoveAction,
+    StartWatcherAction,
     StepSpec,
+    StopWatcherAction,
 )
 from .scanner import TreeMatchResult, match_tree, scan_tree
+
+WATCHER_CONTAINER = os.environ.get(
+    "WATCHER_CONTAINER", "integration-mrdocument-watcher-1"
+)
+WATCHER_HEALTH_URL = os.environ.get(
+    "WATCHER_HEALTH_URL", "http://localhost:8080/health"
+)
 
 
 def _format_mismatch(
@@ -64,6 +75,10 @@ class FixtureRunner:
                 self._delete_file(action)
             elif isinstance(action, CopyFromTreeAction):
                 self._copy_from_tree(action)
+            elif isinstance(action, StopWatcherAction):
+                self._stop_watcher()
+            elif isinstance(action, StartWatcherAction):
+                self._start_watcher()
 
         # 2. Poll until tree matches or timeout
         deadline = time.monotonic() + step.timeout
@@ -149,3 +164,31 @@ class FixtureRunner:
         tmp = dest.with_suffix(dest.suffix + ".tmp")
         shutil.copyfile(str(src), str(tmp))
         os.rename(str(tmp), str(dest))
+
+    def _stop_watcher(self):
+        """Stop the watcher container."""
+        _subprocess.run(
+            ["docker", "stop", WATCHER_CONTAINER],
+            check=True, capture_output=True, timeout=30,
+        )
+
+    def _start_watcher(self):
+        """Start the watcher container and wait for it to become healthy."""
+        _subprocess.run(
+            ["docker", "start", WATCHER_CONTAINER],
+            check=True, capture_output=True, timeout=30,
+        )
+        from urllib.request import urlopen
+        from urllib.error import URLError
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline:
+            try:
+                with urlopen(WATCHER_HEALTH_URL, timeout=3) as resp:
+                    if resp.status == 200:
+                        return
+            except (URLError, OSError):
+                pass
+            time.sleep(1)
+        raise TimeoutError(
+            f"Watcher not healthy at {WATCHER_HEALTH_URL} after 60s"
+        )

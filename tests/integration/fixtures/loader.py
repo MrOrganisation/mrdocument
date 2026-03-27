@@ -39,7 +39,17 @@ class CopyFromTreeAction:
     to: str
 
 
-InputAction = Union[CopyAction, MoveAction, DeleteAction, CopyFromTreeAction]
+@dataclass
+class StopWatcherAction:
+    pass
+
+
+@dataclass
+class StartWatcherAction:
+    pass
+
+
+InputAction = Union[CopyAction, MoveAction, DeleteAction, CopyFromTreeAction, StopWatcherAction, StartWatcherAction]
 
 
 @dataclass
@@ -94,6 +104,10 @@ def _parse_input(raw, files: dict[str, FileRef]) -> InputAction:
             return DeleteAction(pattern=raw["delete"])
         if "copy_match" in raw:
             return CopyFromTreeAction(pattern=raw["copy_match"], to=raw["to"])
+    if raw == "stop_watcher":
+        return StopWatcherAction()
+    if raw == "start_watcher":
+        return StartWatcherAction()
     raise ValueError(f"Unknown input action format: {raw}")
 
 

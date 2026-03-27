@@ -1,0 +1,34 @@
+contexts:
+  - arbeit
+  - privat
+files:
+  - filename: arbeit_rechnung_schulze.pdf
+    path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
+timeout: 300s
+steps:
+  # Step 1: Process through incoming
+  - input:
+      - incoming/arbeit_rechnung_schulze.pdf
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+  # Step 2: Move to reviewed → sorted
+  - input:
+      - move: 'processed/arbeit-.*2025-03-15.*\.pdf'
+        to: 'reviewed/'
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'sorted/arbeit/.*/arbeit-.*2025-03-15.*\.pdf'
+  # Step 3: Delete from sorted → source moves to missing
+  - input:
+      - delete: 'sorted/arbeit/.*/arbeit-.*2025-03-15.*\.pdf'
+    expected:
+      - 'missing/.*arbeit_rechnung_schulze.*'
+  # Step 4: Re-add the original file via incoming.
+  # The watcher matches by source_hash, detects the record is IsMissing,
+  # reprocesses, and the source should end up back in archive/.
+  - input:
+      - incoming/arbeit_rechnung_schulze.pdf
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
