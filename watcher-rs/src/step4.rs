@@ -6,7 +6,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::models::{PathEntry, Record, State};
@@ -49,7 +49,10 @@ pub fn move_file(src: &Path, dest: &Path) -> Option<PathBuf> {
     };
 
     match fs::rename(src, &actual_dest) {
-        Ok(()) => Some(actual_dest),
+        Ok(()) => {
+            info!("fs: {} -> {}", src.display(), actual_dest.display());
+            Some(actual_dest)
+        }
         Err(e) => {
             warn!(
                 "Failed to move {} -> {}: {}",
