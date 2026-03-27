@@ -1238,26 +1238,46 @@ pub fn reconcile<'a>(
                 }
 
                 if let Some(ref ctx) = dir_context {
-                    // Update metadata from subfolder fields
                     if let Some(folders_map) = context_folders {
                         let parts: Vec<&str> = loc_path.split('/').collect();
                         if let Some(folders) = folders_map.get(ctx.as_str()) {
-                            let metadata = record.metadata.get_or_insert_with(|| {
-                                serde_json::Value::Object(serde_json::Map::new())
-                            });
-                            if let Some(obj) = metadata.as_object_mut() {
-                                for (i, field) in folders.iter().enumerate() {
-                                    if field == "context" {
-                                        continue;
+                            // Check if the file has all folder levels filled.
+                            // If a level is missing (file moved "up"), put it
+                            // back where it belongs based on existing metadata.
+                            let expected_depth = folders.len();
+                            let actual_depth = parts.len();
+
+                            if actual_depth < expected_depth {
+                                // File is at a shallower level — move it back
+                                // to the correct location derived from metadata.
+                                let target = compute_target_path(record, context_folders);
+                                if let Some(t) = target {
+                                    if t != current.path {
+                                        record.target_path = Some(t);
+                                        record.current_reference =
+                                            Some(current.path.clone());
                                     }
-                                    if let Some(value) = parts.get(i) {
-                                        if !value.is_empty() {
-                                            obj.insert(
-                                                field.clone(),
-                                                serde_json::Value::String(
-                                                    value.to_string(),
-                                                ),
-                                            );
+                                }
+                            } else {
+                                // File has all folder levels — update metadata
+                                // from the folder position (sideways move).
+                                let metadata = record.metadata.get_or_insert_with(|| {
+                                    serde_json::Value::Object(serde_json::Map::new())
+                                });
+                                if let Some(obj) = metadata.as_object_mut() {
+                                    for (i, field) in folders.iter().enumerate() {
+                                        if field == "context" {
+                                            continue;
+                                        }
+                                        if let Some(value) = parts.get(i) {
+                                            if !value.is_empty() {
+                                                obj.insert(
+                                                    field.clone(),
+                                                    serde_json::Value::String(
+                                                        value.to_string(),
+                                                    ),
+                                                );
+                                            }
                                         }
                                     }
                                 }
