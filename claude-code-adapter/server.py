@@ -298,7 +298,7 @@ def _invoke_claude(payload, system_prompt, model):
         )
 
     result_text = output.get("result", "")
-    cost_usd = output.get("cost_usd", 0.0)
+    cost_usd = 0.0
     is_error = output.get("is_error", False)
 
     log.info(
