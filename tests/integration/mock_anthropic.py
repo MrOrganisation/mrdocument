@@ -127,6 +127,12 @@ DOCUMENT_METADATA = {
         "sender": "Allianz",
         "date": "2025-12-15",
     },
+    "missing_recovery_doc": {
+        "context": "privat",
+        "type": "Versicherung",
+        "sender": "Allianz",
+        "date": "2025-12-15",
+    },
     "trash_test_doc": {
         "context": "arbeit",
         "type": "Angebot",

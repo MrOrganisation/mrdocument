@@ -1008,6 +1008,33 @@ pub fn reconcile<'a>(
     // Missing detection
     if record.current_paths.is_empty() {
         if !record.missing_current_paths.is_empty() {
+            // If a new source just arrived (Phase 1 set source_reference),
+            // reset for reprocessing instead of staying IsMissing.
+            if record.source_reference.is_some() && record.state == State::IsMissing {
+                record.missing_current_paths.clear();
+                // Remove old source entries in missing/ — they're superseded
+                let mut kept = Vec::new();
+                for pe in record.source_paths.drain(..) {
+                    let (loc, _, _) = decompose_path(&pe.path);
+                    if loc == "missing" {
+                        record.deleted_paths.push(pe.path.clone());
+                        record.missing_source_paths.push(pe);
+                    } else {
+                        kept.push(pe);
+                    }
+                }
+                record.source_paths = kept;
+                record.state = State::IsNew;
+                record.context = None;
+                record.metadata = None;
+                record.assigned_filename = None;
+                record.hash = None;
+                record.content_hash = None;
+                record.target_path = None;
+                record.current_reference = None;
+                return Some(record);
+            }
+
             record.state = State::IsMissing;
             // Move source from archive to missing/
             if !record.source_paths.is_empty() {

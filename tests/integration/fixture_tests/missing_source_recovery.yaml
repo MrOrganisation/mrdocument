@@ -2,33 +2,35 @@ contexts:
   - arbeit
   - privat
 files:
-  - filename: arbeit_rechnung_schulze.pdf
-    path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
-timeout: 300s
+  - filename: missing_recovery_doc.txt
+    content: "Test document for missing source recovery. Unique: yaml-fixture-missing-recovery-7x9k"
+timeout: 15s
 steps:
   # Step 1: Process through incoming
   - input:
-      - incoming/arbeit_rechnung_schulze.pdf
+      - incoming/missing_recovery_doc.txt
     expected:
-      - 'archive/arbeit_rechnung_schulze\.pdf'
-      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+      - 'archive/missing_recovery_doc\.txt'
+      - 'processed/privat-.*2025-12-15.*\.txt'
   # Step 2: Move to reviewed → sorted
   - input:
-      - move: 'processed/arbeit-.*2025-03-15.*\.pdf'
+      - move: 'processed/privat-.*2025-12-15.*\.txt'
         to: 'reviewed/'
     expected:
-      - 'archive/arbeit_rechnung_schulze\.pdf'
-      - 'sorted/arbeit/.*/arbeit-.*2025-03-15.*\.pdf'
+      - 'archive/missing_recovery_doc\.txt'
+      - 'sorted/privat/.*/privat-.*2025-12-15.*\.txt'
   # Step 3: Delete from sorted → source moves to missing
   - input:
-      - delete: 'sorted/arbeit/.*/arbeit-.*2025-03-15.*\.pdf'
+      - delete: 'sorted/privat/.*/privat-.*2025-12-15.*\.txt'
     expected:
-      - 'missing/.*arbeit_rechnung_schulze.*'
+      - 'missing/.*missing_recovery_doc.*'
   # Step 4: Re-add the original file via incoming.
   # The watcher matches by source_hash, detects the record is IsMissing,
   # reprocesses, and the source should end up back in archive/.
+  # The old copy in missing/ is moved to void/.
   - input:
-      - incoming/arbeit_rechnung_schulze.pdf
+      - incoming/missing_recovery_doc.txt
     expected:
-      - 'archive/arbeit_rechnung_schulze\.pdf'
-      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+      - 'archive/missing_recovery_doc\.txt'
+      - 'processed/privat-.*2025-12-15.*\.txt'
+      - '~missing/missing_recovery_doc\.txt'
