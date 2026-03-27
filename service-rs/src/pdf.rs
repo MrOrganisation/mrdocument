@@ -72,6 +72,13 @@ pub fn embed_metadata(
         }
     }
 
+    // Remove /Prev from the trailer.  lopdf's save_to() writes a
+    // complete PDF (all objects + fresh xref) but preserves stale
+    // trailer entries from the original file.  A leftover /Prev
+    // offset points into the middle of the old file layout, which
+    // produces an invalid xref chain that macOS Preview rejects.
+    doc.trailer.remove(b"Prev");
+
     let mut output = Vec::new();
     doc.save_to(&mut output)
         .map_err(|e| format!("Failed to save PDF: {}", e))?;
