@@ -4,8 +4,8 @@
 #   docker compose -f docker-compose.yaml -f docker-compose.claude-code.yaml up
 #
 # Prerequisites:
-#   - Valid Claude Code credentials at ~/.claude/ on the host
-#     (run `claude` locally and authenticate first)
+#   - CLAUDE_CODE_OAUTH_TOKEN set in environment or .env file
+#     (run `claude setup-token` locally to generate one)
 
 services:
   anthropic-adapter:
@@ -18,8 +18,7 @@ services:
     environment:
       LOG_LEVEL: INFO
       CLI_TIMEOUT: 14400
-    volumes:
-      - ~/.claude/.credentials.json:/home/node/.claude/.credentials.json:ro
+      CLAUDE_CODE_OAUTH_TOKEN: ${CLAUDE_CODE_OAUTH_TOKEN}
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8080/health"]
       start_period: 15s
