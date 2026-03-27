@@ -1,0 +1,24 @@
+contexts:
+  - arbeit
+files:
+  - filename: arbeit_rechnung_schulze.pdf
+    path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
+timeout: 10s
+steps:
+  # Step 1: Initial processing
+  - input:
+      - incoming/arbeit_rechnung_schulze.pdf
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+  # Step 2: Move (not copy) processed file to reclassify/
+  # The processed file disappears — watcher matches by hash against the
+  # existing record, finds the archive source, and reprocesses.
+  - input:
+      - move: 'processed/arbeit-.*2025-03-15.*\.pdf'
+        to: 'reclassify/'
+    expected:
+      - 'archive/arbeit_rechnung_schulze\.pdf'
+      - 'processed/arbeit-.*2025-03-15.*\.pdf'
+      - '~void/.*/reclassify/.*'
+      - '~void/.*/processed/.*'
