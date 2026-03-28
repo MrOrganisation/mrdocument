@@ -145,6 +145,15 @@ BEGIN
     END IF;
 END
 $$;
+-- Row-Level Security: per-user roles can only access their own rows.
+-- The table owner (mrdocument) bypasses RLS by default.
+ALTER TABLE mrdocument.documents_v2 ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS user_isolation ON mrdocument.documents_v2;
+CREATE POLICY user_isolation ON mrdocument.documents_v2
+    FOR ALL
+    USING (username = current_user)
+    WITH CHECK (username = current_user);
 "#;
 
 // ---------------------------------------------------------------------------
@@ -183,6 +192,76 @@ impl Database {
             .execute(&self.pool)
             .await
             .context("Failed to execute schema SQL")?;
+        Ok(())
+    }
+
+    /// Ensure a per-user PostgreSQL role exists with RLS-scoped access.
+    ///
+    /// Creates the role if it does not exist, grants DML on the documents
+    /// table, and writes the password to `password_file` (only on first
+    /// creation).
+    pub async fn ensure_user_role(
+        &self,
+        username: &str,
+        password_file: &std::path::Path,
+    ) -> Result<()> {
+        // Strict validation — directory-derived names only
+        if !username
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            || username.is_empty()
+            || username.len() > 63
+        {
+            anyhow::bail!("Invalid username for PostgreSQL role: {:?}", username);
+        }
+
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pg_roles WHERE rolname = $1)",
+        )
+        .bind(username)
+        .fetch_one(&self.pool)
+        .await
+        .context("Failed to check if role exists")?;
+
+        if exists {
+            debug!("PostgreSQL role '{}' already exists", username);
+            return Ok(());
+        }
+
+        // Generate random password from two UUIDs (no extra dependency)
+        let password = format!(
+            "{}{}",
+            Uuid::new_v4().to_string().replace('-', ""),
+            Uuid::new_v4().to_string().replace('-', ""),
+        );
+
+        // CREATE ROLE requires dynamic SQL (role names can't be parameterized)
+        let sql = format!(
+            "CREATE ROLE \"{}\" LOGIN PASSWORD '{}'; \
+             GRANT USAGE ON SCHEMA mrdocument TO \"{}\"; \
+             GRANT SELECT, INSERT, UPDATE, DELETE \
+                 ON mrdocument.documents_v2 TO \"{}\"",
+            username,
+            password.replace('\'', "''"),
+            username,
+            username,
+        );
+        sqlx::raw_sql(&sql)
+            .execute(&self.pool)
+            .await
+            .with_context(|| format!("Failed to create role '{}'", username))?;
+
+        // Write password file
+        if let Some(parent) = password_file.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(password_file, &password)
+            .with_context(|| format!("Failed to write password to {:?}", password_file))?;
+
+        info!(
+            "Created PostgreSQL role '{}', password written to {:?}",
+            username, password_file
+        );
         Ok(())
     }
 

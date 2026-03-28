@@ -279,7 +279,7 @@ fn load_root_smart_folders(root: &Path) -> Option<Vec<RootSmartFolderEntry>> {
 // ---------------------------------------------------------------------------
 
 /// Set up a [`DocumentWatcherV2`] for a single user root.
-fn setup_user(
+async fn setup_user(
     user_root: &Path,
     db: Arc<Database>,
     service_url: &str,
@@ -290,6 +290,12 @@ fn setup_user(
 ) -> DocumentWatcherV2 {
     let username = get_username_from_root(user_root);
     ensure_directories(user_root);
+
+    // Ensure a per-user PostgreSQL role exists for direct DB access
+    let password_file = user_root.join(".db-password");
+    if let Err(e) = db.ensure_user_role(&username, &password_file).await {
+        warn!("[{}] Failed to create DB role: {}", username, e);
+    }
 
     let mut context_field_names = None;
     let mut ctx_folders = None;
@@ -789,7 +795,8 @@ async fn main() -> Result<()> {
             processor_timeout,
             stt_url.as_deref(),
             max_concurrent,
-        );
+        )
+        .await;
         known_dirs.insert(user_root.clone());
 
         let handle = tokio::spawn(run_watcher(watcher, full_scan_seconds, debounce_seconds));
@@ -824,7 +831,8 @@ async fn main() -> Result<()> {
                             processor_timeout,
                             stt_url_discovery.as_deref(),
                             max_concurrent,
-                        );
+                        )
+                        .await;
                         kd.insert(new_dir);
                         let h = tokio::spawn(run_watcher(w, full_scan_seconds, debounce_seconds));
                         hs.push(h);
