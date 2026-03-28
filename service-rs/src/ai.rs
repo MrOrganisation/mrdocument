@@ -736,7 +736,7 @@ impl AiClient {
 
         let max_chars = self.config.extraction.max_input_chars;
         let truncated = if text.len() > max_chars {
-            format!("{}\n[... truncated ...]", &text[..max_chars])
+            format!("{}\n[... truncated ...]", crate::truncate::truncate_str(text, max_chars))
         } else {
             text.to_string()
         };
@@ -877,7 +877,7 @@ impl AiClient {
 
         let max_chars = self.config.extraction.max_input_chars;
         let truncated = if text.len() > max_chars {
-            format!("{}\n[... truncated ...]", &text[..max_chars])
+            format!("{}\n[... truncated ...]", crate::truncate::truncate_str(text, max_chars))
         } else {
             text.to_string()
         };
