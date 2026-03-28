@@ -1260,10 +1260,12 @@ pub fn reconcile<'a>(
                                 }
                             } else {
                                 // File has all folder levels — update metadata
-                                // from the folder position (sideways move).
+                                // from the folder position (sideways move) and
+                                // recompute the filename if metadata changed.
                                 let metadata = record.metadata.get_or_insert_with(|| {
                                     serde_json::Value::Object(serde_json::Map::new())
                                 });
+                                let mut metadata_changed = false;
                                 if let Some(obj) = metadata.as_object_mut() {
                                     for (i, field) in folders.iter().enumerate() {
                                         if field == "context" {
@@ -1271,13 +1273,31 @@ pub fn reconcile<'a>(
                                         }
                                         if let Some(value) = parts.get(i) {
                                             if !value.is_empty() {
-                                                obj.insert(
-                                                    field.clone(),
-                                                    serde_json::Value::String(
-                                                        value.to_string(),
-                                                    ),
+                                                let new_val = serde_json::Value::String(
+                                                    value.to_string(),
                                                 );
+                                                if obj.get(field) != Some(&new_val) {
+                                                    obj.insert(field.clone(), new_val);
+                                                    metadata_changed = true;
+                                                }
                                             }
+                                        }
+                                    }
+                                }
+
+                                if metadata_changed {
+                                    if let Some(recompute) = recompute_filename {
+                                        if let Some(new_name) = recompute(record) {
+                                            record.assigned_filename = Some(new_name);
+                                        }
+                                    }
+                                    let target =
+                                        compute_target_path(record, context_folders);
+                                    if let Some(t) = target {
+                                        if t != current.path {
+                                            record.target_path = Some(t);
+                                            record.current_reference =
+                                                Some(current.path.clone());
                                         }
                                     }
                                 }

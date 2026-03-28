@@ -166,9 +166,18 @@ async def health_check() -> dict:
     }
 
 
+class _HealthCheckFilter(logging.Filter):
+    """Suppress health check requests from uvicorn access logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return "GET /health" not in record.getMessage()
+
+
 def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
     """Run the API server."""
     import uvicorn
+
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     uvicorn.run(app, host=host, port=port)
 
 
