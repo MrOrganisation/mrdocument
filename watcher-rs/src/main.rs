@@ -58,8 +58,10 @@ use crate::step5::{RootSmartFolderEntry, SmartFolderEntry};
 const REQUIRED_DIRS: &[&str] = &[
     "archive",
     "incoming",
+    "reclassify",
     "reviewed",
     "processed",
+    "reset",
     "trash",
     ".output",
     "sorted",
