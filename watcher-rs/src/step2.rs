@@ -45,6 +45,16 @@ const VALID_CURRENT_LOCATIONS: &[&str] = &[".output", "processed", "reset", "rev
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Build an error destination with today's date subdirectory.
+fn error_dest(now: DateTime<Utc>, subpath: &str, filename: &str) -> String {
+    let date = now.format("%Y-%m-%d");
+    if subpath.is_empty() {
+        format!("error/{}/{}", date, filename)
+    } else {
+        format!("error/{}/{}/{}", date, subpath, filename)
+    }
+}
+
 fn find_by_source_hash<'a>(records: &'a [Record], hash_value: &str) -> Option<&'a Record> {
     records.iter().find(|r| r.source_hash == hash_value)
 }
@@ -416,7 +426,7 @@ fn handle_addition<F>(
     if location == "reclassify" {
         let change_hash = change.hash.as_deref().unwrap_or("");
         if change_hash.is_empty() {
-            rejected.push((change.path.clone(), format!("error/{}", filename)));
+            rejected.push((change.path.clone(), error_dest(now, "", &filename)));
             return;
         }
 
@@ -495,7 +505,7 @@ fn handle_addition<F>(
                 "Reclassify file {} matched record {} by hash but no original source exists",
                 change.path, record_id
             );
-            rejected.push((change.path.clone(), format!("error/{}", filename)));
+            rejected.push((change.path.clone(), error_dest(now, "", &filename)));
             return;
         }
 
@@ -694,23 +704,18 @@ fn handle_addition<F>(
                 // Reject files with an invalid (unconfigured) context
                 if let Some(folders_map) = context_folders {
                     if !folders_map.contains_key(parts[0]) {
-                        // Build error destination: error/{subpath after context}/{filename}
                         let subpath = if parts.len() > 1 {
                             parts[1..].join("/")
                         } else {
                             String::new()
                         };
                         let (_, _, fname) = decompose_path(&change.path);
-                        let error_dest = if subpath.is_empty() {
-                            format!("error/{}", fname)
-                        } else {
-                            format!("error/{}/{}", subpath, fname)
-                        };
+                        let dest = error_dest(now, &subpath, &fname);
                         warn!(
                             "Invalid context '{}' in sorted path {}, rejecting to {}",
-                            parts[0], change.path, error_dest
+                            parts[0], change.path, dest
                         );
-                        rejected.push((change.path.clone(), error_dest));
+                        rejected.push((change.path.clone(), dest));
                         return;
                     }
                 }
@@ -736,17 +741,16 @@ fn handle_addition<F>(
                                             let is_known =
                                                 candidates.iter().any(|c| c == value);
                                             if !is_known && !allow_new {
-                                                // Reject: error/{loc_path}/{filename}
                                                 let (_, _, fname) =
                                                     decompose_path(&change.path);
-                                                let error_dest =
-                                                    format!("error/{}/{}", loc_path, fname);
+                                                let dest =
+                                                    error_dest(now, &loc_path, &fname);
                                                 warn!(
                                                     "Invalid candidate '{}' for field '{}' in context '{}', rejecting {} to {}",
-                                                    value, field, parts[0], change.path, error_dest
+                                                    value, field, parts[0], change.path, dest
                                                 );
                                                 rejected
-                                                    .push((change.path.clone(), error_dest));
+                                                    .push((change.path.clone(), dest));
                                                 return;
                                             }
                                         }
@@ -4368,8 +4372,9 @@ mod tests {
 
         assert_eq!(created.len(), 0);
         assert_eq!(rejected.len(), 1);
+        let date = Utc::now().format("%Y-%m-%d");
         assert_eq!(rejected[0].0, "sorted/arbeit/schmidt/file.pdf");
-        assert_eq!(rejected[0].1, "error/schmidt/file.pdf");
+        assert_eq!(rejected[0].1, format!("error/{}/schmidt/file.pdf", date));
     }
 
     #[test]
@@ -4421,8 +4426,9 @@ mod tests {
 
         assert_eq!(created.len(), 0);
         assert_eq!(rejected.len(), 1);
+        let date = Utc::now().format("%Y-%m-%d");
         assert_eq!(rejected[0].0, "sorted/arbeit/foo/file.pdf");
-        assert_eq!(rejected[0].1, "error/arbeit/foo/file.pdf");
+        assert_eq!(rejected[0].1, format!("error/{}/arbeit/foo/file.pdf", date));
     }
 
     #[test]
@@ -4918,8 +4924,9 @@ mod tests {
         );
 
         assert_eq!(rejected.len(), 1);
+        let date = Utc::now().format("%Y-%m-%d");
         assert_eq!(rejected[0].0, "reclassify/processed.pdf");
-        assert_eq!(rejected[0].1, "error/processed.pdf");
+        assert_eq!(rejected[0].1, format!("error/{}/processed.pdf", date));
         // Record untouched
         assert_eq!(records[0].state, original_state);
     }
