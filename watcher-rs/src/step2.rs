@@ -7,7 +7,7 @@ use std::collections::{HashMap, HashSet};
 use chrono::{DateTime, Utc};
 use once_cell::sync::Lazy;
 use regex::Regex;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::models::{ChangeItem, EventType, PathEntry, Record, State};
@@ -452,7 +452,20 @@ fn handle_addition<F>(
         let (idx, match_type) = match matched {
             Some(m) => m,
             None => {
-                rejected.push((change.path.clone(), format!("error/{}", filename)));
+                // No existing record — treat as a fresh incoming file so it
+                // gets a new record and goes through the full pipeline.
+                info!(
+                    "Reclassify file {} has no matching record — processing as new",
+                    change.path
+                );
+                let mut record = Record::new(filename.to_string(), change_hash.to_string());
+                record.source_paths.push(PathEntry {
+                    path: change.path.clone(),
+                    timestamp: now,
+                });
+                record.source_content_hash = change.content_hash.clone();
+                record.state = State::IsNew;
+                created.push(record);
                 return;
             }
         };
@@ -4912,8 +4925,8 @@ mod tests {
     }
 
     #[test]
-    fn test_reclassify_no_match_rejected() {
-        // File in reclassify/ matches no record → reject to error
+    fn test_reclassify_no_match_creates_new() {
+        // File in reclassify/ matches no record → create new record
         let mut record = _make_record();
         record.source_hash = "some_hash".to_string();
         record.hash = Some("other_hash".to_string());
@@ -4927,7 +4940,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created, rejected) = preprocess(
+        let (_modified_ids, created, rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -4936,13 +4949,15 @@ mod tests {
             None,
         );
 
-        assert_eq!(rejected.len(), 1);
-        assert_eq!(rejected[0].1, "error/unknown.pdf");
+        assert!(rejected.is_empty(), "should not reject");
+        assert_eq!(created.len(), 1, "should create new record");
+        assert_eq!(created[0].original_filename, "unknown.pdf");
+        assert_eq!(created[0].state, State::IsNew);
     }
 
     #[test]
-    fn test_reclassify_skips_deleted_records() {
-        // Record in NeedsDeletion should not be matched
+    fn test_reclassify_skips_deleted_creates_new() {
+        // Record in NeedsDeletion should not be matched — new record created
         let mut record = _make_record();
         record.source_hash = "del_hash".to_string();
         record.state = State::NeedsDeletion;
@@ -4956,7 +4971,7 @@ mod tests {
             Some(1024),
         );
 
-        let (_modified_ids, _created, rejected) = preprocess(
+        let (_modified_ids, created, rejected) = preprocess(
             &[change],
             &mut records,
             &mut new_records,
@@ -4965,7 +4980,9 @@ mod tests {
             None,
         );
 
-        assert_eq!(rejected.len(), 1, "should not match deleted record");
+        assert!(rejected.is_empty(), "should not reject");
+        assert_eq!(created.len(), 1, "should create new record");
+        assert_eq!(created[0].state, State::IsNew);
     }
 
     #[test]

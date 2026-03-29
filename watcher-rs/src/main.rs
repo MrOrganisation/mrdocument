@@ -423,6 +423,14 @@ async fn setup_user(
             context_field_names.as_ref().map(|m| m.len()).unwrap_or(0)
         );
 
+        // Update Directus context dropdown with this user's contexts
+        if let Some(ref directus) = directus {
+            let ctx_names: Vec<String> = context_manager.contexts.keys().cloned().collect();
+            if let Err(e) = directus.sync_context_choices(&ctx_names).await {
+                warn!("[{}] Failed to sync Directus context choices: {}", username, e);
+            }
+        }
+
         smart_folders = load_smart_folders(&context_manager);
         if let Some(ref sf) = smart_folders {
             info!("[{}] Loaded {} smart folder(s)", username, sf.len());

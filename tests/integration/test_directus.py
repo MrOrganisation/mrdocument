@@ -1,7 +1,7 @@
-"""Integration tests for Directus user provisioning.
+"""Integration tests for Directus integration.
 
-Verifies that the watcher creates Directus users via the mock Directus API
-when it discovers user directories, and that creation is idempotent.
+Verifies that the watcher creates Directus users and configures
+context dropdown choices via the mock Directus API.
 """
 
 import subprocess
@@ -73,3 +73,20 @@ class TestDirectusUserProvisioning:
         assert len(users_after) == 1, (
             f"Expected 1 user after restart, got {len(users_after)}"
         )
+
+
+class TestDirectusContextDropdown:
+    """Context field dropdown is populated with discovered contexts."""
+
+    def test_context_choices_populated(self, test_config: TestConfig):
+        """Watcher updates the context field with valid choices."""
+        resp = requests.get(
+            f"{MOCK_DIRECTUS_URL}/fields/documents_v2/context",
+            timeout=5,
+        )
+        assert resp.status_code == 200
+        meta = resp.json()["data"]["meta"]
+        choices = meta.get("options", {}).get("choices", [])
+        values = [c["value"] for c in choices]
+        assert "arbeit" in values, f"'arbeit' not in context choices: {values}"
+        assert "privat" in values, f"'privat' not in context choices: {values}"

@@ -91,11 +91,9 @@ const FIELD_META = [
   // Primary — visible, top of detail page
   { field: 'id',                meta: { sort: 1,  width: 'half', hidden: false, readonly: true } },
   { field: 'original_filename', meta: { sort: 2,  width: 'half', hidden: false, readonly: true } },
-  { field: 'assigned_filename', meta: { sort: 3,  width: 'half', hidden: false,
-    note: 'Override the auto-generated filename. Leave empty to use the default.',
-  } },
+  { field: 'assigned_filename', meta: { sort: 3,  width: 'half', hidden: false, readonly: true } },
   { field: 'output_filename',   meta: { sort: 4,  width: 'half', hidden: false, readonly: true } },
-  { field: 'state',             meta: { sort: 5,  width: 'half', hidden: false,
+  { field: 'state',             meta: { sort: 5,  width: 'half', hidden: false, readonly: true,
     interface: 'select-dropdown',
     options: { choices: [
       { text: 'New',              value: 'is_new' },
@@ -106,10 +104,11 @@ const FIELD_META = [
       { text: 'Deleted',          value: 'is_deleted' },
       { text: 'Complete',         value: 'is_complete' },
     ] },
-    note: 'Set to "Needs Processing" to trigger reprocessing.',
   } },
   { field: 'context',           meta: { sort: 6,  width: 'half', hidden: false,
-    note: 'Document category (e.g. arbeit, privat). Changing this reclassifies the document.',
+    interface: 'select-dropdown',
+    options: { choices: [], allowOther: false },
+    note: 'Document category. Changing this reclassifies the document. Choices are populated by the watcher.',
   } },
   { field: 'username',          meta: { sort: 7,  width: 'half', hidden: false, readonly: true } },
 
@@ -217,9 +216,7 @@ async function ensurePolicy(roleId) {
 // Fields that users may edit via Directus.
 const USER_EDITABLE_FIELDS = [
   'metadata',
-  'state',
   'context',
-  'assigned_filename',
 ];
 
 async function ensurePermissions(policyId) {

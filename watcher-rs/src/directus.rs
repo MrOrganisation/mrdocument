@@ -4,6 +4,7 @@
 //! `external_identifier`, which the Directus "MrDocument Read Own" policy
 //! uses to filter `documents_v2` rows.
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -22,6 +23,8 @@ pub struct DirectusClient {
     client: Client,
     token: Mutex<Option<String>>,
     role_id: Mutex<Option<String>>,
+    /// Accumulated context names across all discovered users.
+    known_contexts: Mutex<HashSet<String>>,
 }
 
 impl DirectusClient {
@@ -48,6 +51,7 @@ impl DirectusClient {
             client: Client::new(),
             token: Mutex::new(None),
             role_id: Mutex::new(None),
+            known_contexts: Mutex::new(HashSet::new()),
         }))
     }
 
@@ -167,6 +171,44 @@ impl DirectusClient {
         Ok(body)
     }
 
+    /// Make an authenticated PATCH request, retrying once on 401.
+    async fn api_patch(&self, path: &str, payload: &Value) -> Result<Value> {
+        let token = self.get_token().await?;
+        let resp = self
+            .client
+            .patch(format!("{}{}", self.url, path))
+            .bearer_auth(&token)
+            .json(payload)
+            .send()
+            .await
+            .with_context(|| format!("PATCH {path}"))?;
+
+        if resp.status().as_u16() == 401 {
+            let token = self.login().await?;
+            let resp = self
+                .client
+                .patch(format!("{}{}", self.url, path))
+                .bearer_auth(&token)
+                .json(payload)
+                .send()
+                .await
+                .with_context(|| format!("PATCH {path} (retry)"))?;
+            let status = resp.status();
+            let body: Value = resp.json().await.unwrap_or_default();
+            if !status.is_success() {
+                anyhow::bail!("PATCH {path} → {status}: {body}");
+            }
+            return Ok(body);
+        }
+
+        let status = resp.status();
+        let body: Value = resp.json().await.unwrap_or_default();
+        if !status.is_success() {
+            anyhow::bail!("PATCH {path} → {status}: {body}");
+        }
+        Ok(body)
+    }
+
     /// Look up the "MrDocument User" role ID, caching the result.
     async fn get_role_id(&self) -> Result<String> {
         {
@@ -258,6 +300,44 @@ impl DirectusClient {
             "Created Directus user '{}' ({}), password written to {:?}",
             username, email, password_file
         );
+        Ok(())
+    }
+
+    /// Update the `context` field dropdown choices on `documents_v2`.
+    ///
+    /// Merges `contexts` into the accumulated set of known contexts and
+    /// PATCHes the field metadata so the Directus UI shows a dropdown
+    /// with all valid choices.  Idempotent — skips the API call when
+    /// nothing new was added.
+    pub async fn sync_context_choices(&self, contexts: &[String]) -> Result<()> {
+        let mut known = self.known_contexts.lock().await;
+        let before = known.len();
+        for ctx in contexts {
+            known.insert(ctx.clone());
+        }
+        if known.len() == before {
+            return Ok(());
+        }
+
+        let mut sorted: Vec<&String> = known.iter().collect();
+        sorted.sort();
+        let choices: Vec<Value> = sorted
+            .iter()
+            .map(|c| json!({ "text": c, "value": c }))
+            .collect();
+
+        self.api_patch(
+            "/fields/documents_v2/context",
+            &json!({
+                "meta": {
+                    "interface": "select-dropdown",
+                    "options": { "choices": choices },
+                }
+            }),
+        )
+        .await?;
+
+        info!("Updated Directus context choices: {:?}", sorted);
         Ok(())
     }
 }

@@ -1,17 +1,19 @@
 """Mock Directus API backend for integration tests.
 
 Implements the subset of the Directus API that the mrdocument-watcher uses
-for user provisioning:
+for user provisioning and field configuration:
     - Authentication (login)
     - Role lookup
     - User lookup and creation
+    - Field metadata updates (context dropdown choices)
 
 Endpoints:
-    GET  /server/health                 - Health check
-    POST /auth/login                    - Returns a mock access token
-    GET  /roles                         - Returns roles including "MrDocument User"
-    GET  /users?filter[...]             - User lookup by external_identifier
-    POST /users                         - User creation
+    GET   /server/health                          - Health check
+    POST  /auth/login                             - Returns a mock access token
+    GET   /roles                                  - Returns roles including "MrDocument User"
+    GET   /users?filter[...]                      - User lookup by external_identifier
+    POST  /users                                  - User creation
+    PATCH /fields/documents_v2/<field>            - Update field metadata
 
 Usage:
     gunicorn --bind 0.0.0.0:8055 --workers 2 --timeout 30 mock_directus:app
@@ -26,6 +28,7 @@ app = Flask("mock_directus")
 # In-memory state
 ROLE_ID = str(uuid.uuid4())
 users = {}  # external_identifier -> user dict
+fields = {}  # field_name -> meta dict
 
 MOCK_TOKEN = "mock-directus-token"
 
@@ -101,3 +104,20 @@ def create_user():
     }
     users[ext_id] = user
     return directus_response(user), 200
+
+
+# ---------------------------------------------------------------------------
+# Fields
+# ---------------------------------------------------------------------------
+
+@app.route("/fields/documents_v2/<field_name>", methods=["PATCH"])
+def patch_field(field_name):
+    body = request.get_json(force=True)
+    fields[field_name] = body.get("meta", {})
+    return directus_response({"collection": "documents_v2", "field": field_name, "meta": fields[field_name]})
+
+
+@app.route("/fields/documents_v2/<field_name>", methods=["GET"])
+def get_field(field_name):
+    meta = fields.get(field_name, {})
+    return directus_response({"collection": "documents_v2", "field": field_name, "meta": meta})
