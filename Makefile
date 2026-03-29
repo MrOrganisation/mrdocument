@@ -23,13 +23,13 @@ BRANCH     := $(shell git rev-parse --abbrev-ref HEAD)
 COMMIT     := $(shell git rev-parse --short HEAD)
 IMAGE_TAG  := $(VERSION)-$(BRANCH)-$(COMMIT)
 REGISTRY   := 127.0.0.1:5000
-RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter claude-code-adapter mrdocument-db
+RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter claude-code-adapter mrdocument-db directus-init
 
 # ==============================================================================
 # Build / Up / Down
 # ==============================================================================
 
-build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db
+build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db build-directus-init
 
 build-service:
 	$(COMPOSE) build mrdocument-service
@@ -48,6 +48,9 @@ build-anthropic-adapter:
 
 build-db:
 	$(COMPOSE) build mrdocument-db
+
+build-directus-init:
+	$(COMPOSE) build directus-init
 
 CLAUDE_CODE_OVERRIDE := docker-compose.claude-code.yaml
 COMPOSE_CLAUDE_CODE := $(COMPOSE) -f docker-compose.yaml -f $(CLAUDE_CODE_OVERRIDE)
@@ -86,6 +89,7 @@ build-amd64:
 	$(call buildx_image,Dockerfile.anthropic-adapter,anthropic-adapter)
 	$(call buildx_image,Dockerfile.claude-code-adapter,claude-code-adapter)
 	$(call buildx_image,Dockerfile.db,mrdocument-db)
+	$(call buildx_image,Dockerfile.directus-init,directus-init)
 
 define buildx_push
 	docker buildx build \
@@ -108,6 +112,7 @@ push-amd64:
 	$(call buildx_push,Dockerfile.anthropic-adapter,anthropic-adapter)
 	$(call buildx_push,Dockerfile.claude-code-adapter,claude-code-adapter)
 	$(call buildx_push,Dockerfile.db,mrdocument-db)
+	$(call buildx_push,Dockerfile.directus-init,directus-init)
 
 release-amd64:
 	@for img in $(RELEASE_IMAGES); do \

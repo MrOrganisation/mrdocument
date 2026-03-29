@@ -175,6 +175,54 @@ services:
       timeout: 5s
       retries: 5
 
+  directus:
+    image: directus/directus:latest
+    container_name: directus
+    restart: unless-stopped
+    environment:
+      DB_CLIENT: pg
+      DB_HOST: mrdocument-db
+      DB_PORT: 5432
+      DB_DATABASE: mrdocument
+      DB_USER: mrdocument
+      DB_PASSWORD: ${MRDOCUMENT_DB_PASSWORD}
+      DB_SEARCH_PATH: public,mrdocument
+      KEY: ${DIRECTUS_KEY}
+      SECRET: ${DIRECTUS_SECRET}
+      ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD}
+      PUBLIC_URL: http://localhost:8055
+    networks:
+      - mrdocument-net
+    ports:
+      - "127.0.0.1:8055:8055"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:8055/server/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      start_period: 30s
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    depends_on:
+      mrdocument-db:
+        condition: service_healthy
+
+  directus-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.directus-init
+    image: directus-init:latest-custom
+    container_name: directus-init
+    restart: "no"
+    environment:
+      DIRECTUS_URL: http://directus:8055
+      DIRECTUS_ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL}
+      DIRECTUS_ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD}
+    networks:
+      - mrdocument-net
+    depends_on:
+      directus:
+        condition: service_healthy
+
   mrdocument-watcher:
     build:
       context: .
