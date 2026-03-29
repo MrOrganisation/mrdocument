@@ -38,7 +38,8 @@ impl DirectusClient {
                 return None;
             }
         };
-        let url = "http://directus:8055".to_string();
+        let url = std::env::var("DIRECTUS_URL")
+            .unwrap_or_else(|_| "http://directus:8055".into());
 
         Some(Arc::new(Self {
             url,

@@ -1,0 +1,7 @@
+FROM python:3.12-slim
+RUN apt-get update && apt-get install -y --no-install-recommends curl && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir flask gunicorn
+COPY tests/integration/mock_directus.py /app/mock_directus.py
+WORKDIR /app
+EXPOSE 8055
+CMD ["gunicorn", "--bind", "0.0.0.0:8055", "--workers", "2", "--timeout", "30", "mock_directus:app"]
