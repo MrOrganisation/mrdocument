@@ -8,9 +8,9 @@ steps:
   - input:
       - sorted/foo/arbeit_vertrag_fischer.pdf
     expected:
-      - error/arbeit_vertrag_fischer.pdf
+      - error/{CURRENT_DATE}/arbeit_vertrag_fischer.pdf
   - input:
       - sorted/foo/bar/arbeit_vertrag_fischer.pdf
     expected:
-      - error/arbeit_vertrag_fischer.pdf
-      - error/bar/arbeit_vertrag_fischer.pdf
+      - error/{CURRENT_DATE}/arbeit_vertrag_fischer.pdf
+      - error/{CURRENT_DATE}/bar/arbeit_vertrag_fischer.pdf

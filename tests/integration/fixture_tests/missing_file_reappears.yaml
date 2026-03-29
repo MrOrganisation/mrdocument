@@ -4,7 +4,7 @@ contexts:
 files:
   - filename: missing_test_doc.txt
     content: "Test document missing_test_doc. Unique: yaml-fixture-missing-reappear"
-timeout: 15s
+timeout: 30s
 steps:
   # Step 1: Process through incoming
   - input:

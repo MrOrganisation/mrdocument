@@ -5,8 +5,12 @@ files:
     path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
 timeout: 15s
 steps:
-  # Place a file in reclassify/ that matches no existing record → error
+  # Place a file in reclassify/ that matches no existing record.
+  # It should be processed as a new document (not rejected).
+  # The mock classifies by filename stem — "reclassify_unknown" has no
+  # metadata entry, so it gets the default classification.
   - input:
       - reclassify/reclassify_unknown.pdf
     expected:
-      - 'error/reclassify_unknown\.pdf'
+      - 'archive/reclassify_unknown\.pdf'
+      - 'processed/privat-.*\.pdf'
