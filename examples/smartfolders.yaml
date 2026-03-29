@@ -12,3 +12,10 @@ smart_folders:
     condition:
       field: "type"
       value: "Arztbrief"
+
+# Paths to recursively watch for per-directory smartfolder.yaml files.
+# Each directory containing a smartfolder.yaml (case-insensitive) becomes
+# a root smart folder with that directory as the symlink output path.
+smartfolder_paths:
+  - /home/user/Desktop/SmartFolders
+  - ./custom_views

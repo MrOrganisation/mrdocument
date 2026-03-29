@@ -145,6 +145,29 @@ BEGIN
     END IF;
 END
 $$;
+-- Notify the watcher when a row is updated (e.g. via Directus).
+-- Payload is the username so the listener can wake the right watcher.
+CREATE OR REPLACE FUNCTION mrdocument.notify_document_update()
+RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pg_notify('mrdocument_update', NEW.username);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'documents_v2_notify_update'
+    ) THEN
+        CREATE TRIGGER documents_v2_notify_update
+            AFTER UPDATE ON mrdocument.documents_v2
+            FOR EACH ROW EXECUTE FUNCTION mrdocument.notify_document_update();
+    END IF;
+END
+$$;
+
 -- Row-Level Security: per-user roles can only access their own rows.
 -- The table owner (mrdocument) bypasses RLS by default.
 ALTER TABLE mrdocument.documents_v2 ENABLE ROW LEVEL SECURITY;

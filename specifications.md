@@ -460,11 +460,33 @@ smart_folders:
       field: "type"
       value: "Rechnung"
     filename_regex: "pattern"  # Optional
+
+smartfolder_paths:
+  - /path/to/watch
+  - ./relative/path
 ```
 
 - `path` is resolved relative to the user root if not absolute.
 - Each entry must specify a `context` and a `path`.
+- When two records would produce a symlink with the same filename, a numeric suffix (`_1`, `_2`, …) is added to resolve the collision.
+- Removal of symlinks also covers suffixed names.
 - Changes to this file trigger a config reload.
+
+### `smartfolder_paths`
+
+- A list of directory paths to recursively scan for per-directory `smartfolder.yaml` files (matched case-insensitively).
+- Each directory containing a `smartfolder.yaml` becomes a root smart folder with that directory as the symlink output path and the directory name as the smart folder name.
+- Per-directory `smartfolder.yaml` format:
+  ```yaml
+  context: arbeit
+  condition:
+    field: "type"
+    value: "Rechnung"
+  filename_regex: "2025"  # optional
+  ```
+- Paths are resolved relative to the user root if not absolute.
+- Hidden directories (`.` prefix) are skipped during the recursive walk.
+- Changes to any discovered `smartfolder.yaml` file trigger a config reload.
 
 
 ## STT Configuration

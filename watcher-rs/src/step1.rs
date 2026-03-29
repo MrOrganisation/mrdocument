@@ -264,11 +264,16 @@ pub struct FilesystemDetector {
     /// Set to `true` when a config file in `sorted/` changes.
     pub config_changed: bool,
     root_sf_hash: Option<String>,
+    /// Paths from `smartfolder_paths` in root `smartfolders.yaml`.
+    /// Monitored for discovered `smartfolder.yaml` config changes.
+    smartfolder_paths: Vec<PathBuf>,
+    /// External wake-up signal (e.g. from DB LISTEN/NOTIFY).
+    db_notify: Arc<tokio::sync::Notify>,
 }
 
 impl FilesystemDetector {
     /// Create a new detector for the given root directory.
-    pub fn new(root: PathBuf) -> Self {
+    pub fn new(root: PathBuf, db_notify: Arc<tokio::sync::Notify>) -> Self {
         let (tx, rx) = mpsc::channel(256);
         Self {
             root,
@@ -279,6 +284,8 @@ impl FilesystemDetector {
             event_rx: Some(rx),
             config_changed: false,
             root_sf_hash: None,
+            smartfolder_paths: Vec::new(),
+            db_notify,
         }
     }
 
@@ -365,22 +372,30 @@ impl FilesystemDetector {
         }
     }
 
-    /// Wait for a filesystem event, up to `timeout_secs` seconds.
+    /// Wait for a filesystem or database event, up to `timeout_secs` seconds.
     ///
-    /// Returns `true` if an event arrived, `false` if the timeout expired.
+    /// Returns `true` if an event arrived (filesystem change or DB
+    /// LISTEN/NOTIFY), `false` if the timeout expired.
     pub async fn wait_for_event(&mut self, timeout_secs: f64) -> bool {
-        if self.watcher.is_none() {
-            return false;
-        }
         let duration = tokio::time::Duration::from_secs_f64(timeout_secs);
+        let db_notified = self.db_notify.notified();
+
         match &mut self.event_rx {
-            Some(rx) => {
-                match tokio::time::timeout(duration, rx.recv()).await {
-                    Ok(Some(())) => true,
-                    _ => false,
+            Some(rx) if self.watcher.is_some() => {
+                tokio::select! {
+                    result = tokio::time::timeout(duration, rx.recv()) => {
+                        matches!(result, Ok(Some(())))
+                    }
+                    _ = db_notified => true,
                 }
             }
-            None => false,
+            _ => {
+                // No filesystem watcher — still respond to DB notifications.
+                matches!(
+                    tokio::time::timeout(duration, db_notified).await,
+                    Ok(()),
+                )
+            }
         }
     }
 
@@ -396,13 +411,45 @@ impl FilesystemDetector {
         }
     }
 
-    /// Check if root `smartfolders.yaml` changed and set `config_changed`.
+    /// Set `smartfolder_paths` for monitoring discovered smartfolder configs.
+    pub fn set_smartfolder_paths(&mut self, paths: Vec<PathBuf>) {
+        self.smartfolder_paths = paths;
+    }
+
+    /// Check if root `smartfolders.yaml` or any discovered `smartfolder.yaml`
+    /// in `smartfolder_paths` changed and set `config_changed`.
     fn check_root_smartfolders_yaml(&mut self) {
         let sf_path = self.root.join("smartfolders.yaml");
-        let current_hash = if sf_path.is_file() {
-            compute_sha256(&sf_path).ok()
-        } else {
+
+        // Build a combined hash of root config + all discovered configs.
+        let mut combined = String::new();
+
+        if sf_path.is_file() {
+            if let Ok(h) = compute_sha256(&sf_path) {
+                combined.push_str(&h);
+            }
+        }
+
+        // Hash all discovered smartfolder.yaml files from smartfolder_paths.
+        let mut discovered: Vec<(String, String)> = Vec::new();
+        for search_path in &self.smartfolder_paths {
+            for config_file in crate::config::find_smartfolder_yaml_files(search_path) {
+                if let Ok(h) = compute_sha256(&config_file) {
+                    discovered.push((config_file.display().to_string(), h));
+                }
+            }
+        }
+        discovered.sort();
+        for (path, hash) in &discovered {
+            combined.push_str(path);
+            combined.push_str(hash);
+        }
+
+        let current_hash = if combined.is_empty() {
             None
+        } else {
+            let h = Sha256::digest(combined.as_bytes());
+            Some(format!("{:x}", h))
         };
 
         if current_hash != self.root_sf_hash {
@@ -1195,7 +1242,7 @@ mod tests {
         fs::create_dir_all(root.join("sorted/work")).unwrap();
         fs::write(root.join("sorted/work/report.pdf"), b"report").unwrap();
 
-        let detector = FilesystemDetector::new(root.to_path_buf());
+        let detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let result = detector.scan();
 
         assert!(result.contains_key("incoming/doc.pdf"));
@@ -1211,7 +1258,7 @@ mod tests {
         fs::write(root.join("incoming/.hidden"), b"secret").unwrap();
         fs::write(root.join("incoming/visible.pdf"), b"visible").unwrap();
 
-        let detector = FilesystemDetector::new(root.to_path_buf());
+        let detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let result = detector.scan();
 
         assert!(!result.contains_key("incoming/.hidden"));
@@ -1231,7 +1278,7 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&target, &link).unwrap();
 
-        let detector = FilesystemDetector::new(root.to_path_buf());
+        let detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let result = detector.scan();
 
         assert!(result.contains_key("incoming/real.pdf"));
@@ -1249,7 +1296,7 @@ mod tests {
         fs::create_dir_all(root.join("sorted/work")).unwrap();
         fs::write(root.join("sorted/work/deep.pdf"), b"deep content").unwrap();
 
-        let detector = FilesystemDetector::new(root.to_path_buf());
+        let detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let result = detector.scan();
 
         assert!(result.contains_key("sorted/work/deep.pdf"));
@@ -1267,7 +1314,7 @@ mod tests {
         fs::write(root.join("sorted/work/generated.yaml"), b"gen: true").unwrap();
         fs::write(root.join("sorted/work/document.pdf"), b"document").unwrap();
 
-        let detector = FilesystemDetector::new(root.to_path_buf());
+        let detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let result = detector.scan();
 
         assert!(!result.contains_key("sorted/work/context.yaml"));
@@ -1289,7 +1336,7 @@ mod tests {
         fs::write(root.join("incoming/a.pdf"), b"aaa").unwrap();
         fs::write(root.join("incoming/b.pdf"), b"bbb").unwrap();
 
-        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let mut detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let changes = detector.detect(&[], false).await;
 
         // Both files should be reported as additions
@@ -1331,7 +1378,7 @@ mod tests {
             None,
         );
 
-        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let mut detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let changes = detector.detect(&[record], false).await;
 
         // The known file should NOT be re-reported as addition
@@ -1360,7 +1407,7 @@ mod tests {
             None,
         );
 
-        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let mut detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
         let changes = detector.detect(&[record], false).await;
 
         let removals: Vec<_> = changes
@@ -1464,7 +1511,7 @@ mod tests {
         // Place one file before the initial scan.
         fs::write(root.join("incoming/existing.pdf"), b"existing").unwrap();
 
-        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let mut detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
 
         // First detect: full scan — starts the inotify observer and populates
         // previous_state with "incoming/existing.pdf".
@@ -1510,7 +1557,7 @@ mod tests {
 
         fs::write(root.join("incoming/only.pdf"), b"content").unwrap();
 
-        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let mut detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
 
         // Initial full scan — populates previous_state.
         let changes = detector.detect(&[], false).await;
@@ -1535,7 +1582,7 @@ mod tests {
         let root = dir.path();
         setup_dirs(root);
 
-        let mut detector = FilesystemDetector::new(root.to_path_buf());
+        let mut detector = FilesystemDetector::new(root.to_path_buf(), Arc::new(tokio::sync::Notify::new()));
 
         // Initial full scan with empty filesystem.
         let changes = detector.detect(&[], false).await;

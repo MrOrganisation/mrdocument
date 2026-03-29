@@ -242,6 +242,8 @@ services:
       LOG_LEVEL: INFO
       LOG_DIR: /var/log/mrdocument-watcher
       DATABASE_URL: postgresql://mrdocument:${MRDOCUMENT_DB_PASSWORD}@mrdocument-db:5432/mrdocument
+      DIRECTUS_ADMIN_EMAIL: ${DIRECTUS_ADMIN_EMAIL}
+      DIRECTUS_ADMIN_PASSWORD: ${DIRECTUS_ADMIN_PASSWORD}
       PUID: 1000
       PGID: 1000
     networks:

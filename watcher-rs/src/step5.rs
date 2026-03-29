@@ -370,9 +370,8 @@ impl RootSmartFolderReconciler {
                 let symlink_path = entry.path.join(&filename);
 
                 if !sf_config.matches_filename(&filename) {
-                    if is_symlink(&symlink_path) {
-                        let _ = fs::remove_file(&symlink_path);
-                    }
+                    // Remove any symlinks to this file (including suffixed)
+                    remove_symlinks_to_file(&entry.path, &file_path);
                     continue;
                 }
 
@@ -382,54 +381,46 @@ impl RootSmartFolderReconciler {
                     .map_or(true, |cond| cond.evaluate(&str_fields));
 
                 if condition_matches {
-                    if !symlink_path.exists() && !is_symlink(&symlink_path) {
-                        match fs::create_dir_all(&entry.path) {
-                            Ok(()) => {
-                                // Compute relative path from symlink dir to the actual file
-                                let relative_target =
-                                    compute_relative_path(&entry.path, &file_path);
-                                match unix_fs::symlink(&relative_target, &symlink_path) {
-                                    Ok(()) => {
-                                        info!(
-                                            "Root smart folder link: {} -> {}",
-                                            symlink_path.display(),
-                                            filename,
-                                        );
-                                    }
-                                    Err(e) => {
-                                        error!(
-                                            "Failed to create root smart folder symlink {}: {}",
-                                            symlink_path.display(),
-                                            e
-                                        );
-                                    }
+                    // Skip if a symlink to this file already exists (base or suffixed)
+                    if find_symlink_to_file(&entry.path, &file_path).is_some() {
+                        continue;
+                    }
+
+                    // Find available path (adds _1, _2, … suffix on collision)
+                    let actual_symlink_path = find_available_symlink_path(&symlink_path);
+
+                    match fs::create_dir_all(&entry.path) {
+                        Ok(()) => {
+                            let relative_target =
+                                compute_relative_path(&entry.path, &file_path);
+                            match unix_fs::symlink(&relative_target, &actual_symlink_path) {
+                                Ok(()) => {
+                                    info!(
+                                        "Root smart folder link: {} -> {}",
+                                        actual_symlink_path.display(),
+                                        filename,
+                                    );
+                                }
+                                Err(e) => {
+                                    error!(
+                                        "Failed to create root smart folder symlink {}: {}",
+                                        actual_symlink_path.display(),
+                                        e
+                                    );
                                 }
                             }
-                            Err(e) => {
-                                error!(
-                                    "Failed to create dir {}: {}",
-                                    entry.path.display(),
-                                    e
-                                );
-                            }
-                        }
-                    }
-                } else if is_symlink(&symlink_path) {
-                    match fs::remove_file(&symlink_path) {
-                        Ok(()) => {
-                            info!(
-                                "Removed root smart folder link: {}",
-                                symlink_path.display(),
-                            );
                         }
                         Err(e) => {
                             error!(
-                                "Failed to remove root smart folder symlink {}: {}",
-                                symlink_path.display(),
+                                "Failed to create dir {}: {}",
+                                entry.path.display(),
                                 e
                             );
                         }
                     }
+                } else {
+                    // Condition doesn't match -- remove any symlinks to this file
+                    remove_symlinks_to_file(&entry.path, &file_path);
                 }
             }
         }
@@ -553,6 +544,81 @@ fn compute_relative_path(from_dir: &Path, to_file: &Path) -> PathBuf {
     }
 
     result
+}
+
+/// Check if any symlink in `dir` resolves to `target_file`.
+///
+/// Returns the symlink path if found, or `None`.
+fn find_symlink_to_file(dir: &Path, target_file: &Path) -> Option<PathBuf> {
+    let target_canonical = target_file.canonicalize().ok()?;
+    let entries = fs::read_dir(dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_symlink(&path) {
+            if let Ok(resolved) = path.canonicalize() {
+                if resolved == target_canonical {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find an available symlink path, adding a numeric suffix if needed.
+///
+/// Given base path `dir/stem.ext`, tries `dir/stem.ext`, then `dir/stem_1.ext`,
+/// `dir/stem_2.ext`, etc. until an unoccupied path is found.
+fn find_available_symlink_path(base_path: &Path) -> PathBuf {
+    if !base_path.exists() && !is_symlink(base_path) {
+        return base_path.to_path_buf();
+    }
+
+    let stem = base_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("link");
+    let ext = base_path.extension().and_then(|e| e.to_str());
+    let parent = base_path.parent().unwrap_or(Path::new("."));
+
+    for i in 1u32.. {
+        let suffixed = match ext {
+            Some(e) => parent.join(format!("{}_{}.{}", stem, i, e)),
+            None => parent.join(format!("{}_{}", stem, i)),
+        };
+        if !suffixed.exists() && !is_symlink(&suffixed) {
+            return suffixed;
+        }
+    }
+
+    // Unreachable in practice
+    base_path.to_path_buf()
+}
+
+/// Remove all symlinks in `dir` that resolve to `target_file`.
+fn remove_symlinks_to_file(dir: &Path, target_file: &Path) {
+    let target_canonical = match target_file.canonicalize() {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if is_symlink(&path) {
+            if let Ok(resolved) = path.canonicalize() {
+                if resolved == target_canonical {
+                    if let Err(e) = fs::remove_file(&path) {
+                        error!("Failed to remove symlink {}: {}", path.display(), e);
+                    } else {
+                        info!("Removed root smart folder link: {}", path.display());
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1108,5 +1174,145 @@ mod tests {
 
         // The broken symlink pointing into sorted/ should be removed
         assert!(!rsf_dir.join("removed.pdf").exists());
+    }
+
+    #[test]
+    fn test_root_smart_folder_collision_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Create two files with the same name in different leaf folders
+        let dir_a = root.join("sorted/work/alpha");
+        let dir_b = root.join("sorted/work/beta");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::write(dir_a.join("invoice.pdf"), b"content A").unwrap();
+        fs::write(dir_b.join("invoice.pdf"), b"content B").unwrap();
+
+        let rsf_dir = root.join("root_sf");
+        let entry = RootSmartFolderEntry {
+            name: "all_invoices".into(),
+            context: "work".into(),
+            path: rsf_dir.clone(),
+            config: make_sf_config("all_invoices", None, None),
+        };
+        let reconciler = RootSmartFolderReconciler::new(root.clone(), vec![entry]);
+
+        let mut r1 = Record::new("invoice.pdf".into(), "hash_a".into());
+        r1.state = State::IsComplete;
+        r1.context = Some("work".into());
+        r1.current_paths = vec![PathEntry {
+            path: "sorted/work/alpha/invoice.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        let mut r2 = Record::new("invoice.pdf".into(), "hash_b".into());
+        r2.state = State::IsComplete;
+        r2.context = Some("work".into());
+        r2.current_paths = vec![PathEntry {
+            path: "sorted/work/beta/invoice.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        reconciler.reconcile(&[r1, r2]);
+
+        // Both should get symlinks: one at base name, one with suffix
+        let base = rsf_dir.join("invoice.pdf");
+        let suffixed = rsf_dir.join("invoice_1.pdf");
+        assert!(base.exists(), "Base symlink should exist");
+        assert!(is_symlink(&base), "Base should be a symlink");
+        assert!(suffixed.exists(), "Suffixed symlink should exist");
+        assert!(is_symlink(&suffixed), "Suffixed should be a symlink");
+
+        // Both should resolve to different files
+        let resolved_base = base.canonicalize().unwrap();
+        let resolved_suffixed = suffixed.canonicalize().unwrap();
+        assert_ne!(resolved_base, resolved_suffixed);
+    }
+
+    #[test]
+    fn test_root_smart_folder_collision_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+
+        // Two files with the same name
+        let dir_a = root.join("sorted/work/alpha");
+        let dir_b = root.join("sorted/work/beta");
+        fs::create_dir_all(&dir_a).unwrap();
+        fs::create_dir_all(&dir_b).unwrap();
+        fs::write(dir_a.join("doc.pdf"), b"content A").unwrap();
+        fs::write(dir_b.join("doc.pdf"), b"content B").unwrap();
+
+        let rsf_dir = root.join("root_sf");
+        let entry = RootSmartFolderEntry {
+            name: "all".into(),
+            context: "work".into(),
+            path: rsf_dir.clone(),
+            config: make_sf_config("all", None, None),
+        };
+        let reconciler = RootSmartFolderReconciler::new(root.clone(), vec![entry]);
+
+        let mut r1 = Record::new("doc.pdf".into(), "hash_a".into());
+        r1.state = State::IsComplete;
+        r1.context = Some("work".into());
+        r1.current_paths = vec![PathEntry {
+            path: "sorted/work/alpha/doc.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+        let mut r2 = Record::new("doc.pdf".into(), "hash_b".into());
+        r2.state = State::IsComplete;
+        r2.context = Some("work".into());
+        r2.current_paths = vec![PathEntry {
+            path: "sorted/work/beta/doc.pdf".into(),
+            timestamp: Utc::now(),
+        }];
+
+        // Run twice -- should not create additional symlinks
+        reconciler.reconcile(&[r1.clone(), r2.clone()]);
+        reconciler.reconcile(&[r1, r2]);
+
+        // Count symlinks in rsf_dir
+        let count = fs::read_dir(&rsf_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| is_symlink(&e.path()))
+            .count();
+        assert_eq!(count, 2, "Should have exactly 2 symlinks after two runs");
+    }
+
+    #[test]
+    fn test_root_smart_folder_removes_suffixed_on_condition_change() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let rsf_dir = root.join("root_sf");
+        fs::create_dir_all(&rsf_dir).unwrap();
+
+        // Manually create a suffixed symlink to simulate prior collision
+        let file_path = root.join("sorted/work/invoice.pdf");
+        let relative_target = compute_relative_path(&rsf_dir, &file_path);
+        unix_fs::symlink(&relative_target, rsf_dir.join("invoice_1.pdf")).unwrap();
+        assert!(is_symlink(&rsf_dir.join("invoice_1.pdf")));
+
+        // Condition won't match
+        let cond = make_statement("type", "contract");
+        let entry = RootSmartFolderEntry {
+            name: "contracts".into(),
+            context: "work".into(),
+            path: rsf_dir.clone(),
+            config: make_sf_config("contracts", Some(cond), None),
+        };
+        let reconciler = RootSmartFolderReconciler::new(root.clone(), vec![entry]);
+
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.metadata = Some(serde_json::json!({"type": "invoice"}));
+        reconciler.reconcile(&[r]);
+
+        // Suffixed symlink should be removed since condition doesn't match
+        assert!(
+            !rsf_dir.join("invoice_1.pdf").exists(),
+            "Suffixed symlink should be removed when condition fails"
+        );
     }
 }

@@ -1689,6 +1689,43 @@ fn yaml_f64(data: &serde_yaml::Value, key: &str) -> Option<f64> {
         .and_then(|v| v.as_f64())
 }
 
+// ---------------------------------------------------------------------------
+// Smart folder path discovery
+// ---------------------------------------------------------------------------
+
+/// Recursively find all `smartfolder.yaml` files (case-insensitive) under `dir`.
+///
+/// Used by `smartfolder_paths` to discover per-directory smart folder configs.
+pub fn find_smartfolder_yaml_files(dir: &Path) -> Vec<PathBuf> {
+    let mut results = Vec::new();
+    find_smartfolder_yaml_files_inner(dir, &mut results);
+    results
+}
+
+fn find_smartfolder_yaml_files_inner(dir: &Path, results: &mut Vec<PathBuf>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if !name.starts_with('.') {
+                    find_smartfolder_yaml_files_inner(&path, results);
+                }
+            }
+        } else if path.is_file() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.eq_ignore_ascii_case("smartfolder.yaml") {
+                    results.push(path);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2323,5 +2360,41 @@ fields:
             "ga context should NOT be loaded (YAML parse fails on double-quoted regex), \
              but it was loaded — meaning the bug is not reproducible with this YAML version",
         );
+    }
+
+    #[test]
+    fn test_find_smartfolder_yaml_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+
+        // Create nested directories with smartfolder.yaml files
+        let dir_a = root.join("invoices");
+        let dir_b = root.join("medical");
+        let dir_c = root.join("nested/deep/contracts");
+        let dir_hidden = root.join(".hidden");
+        std::fs::create_dir_all(&dir_a).unwrap();
+        std::fs::create_dir_all(&dir_b).unwrap();
+        std::fs::create_dir_all(&dir_c).unwrap();
+        std::fs::create_dir_all(&dir_hidden).unwrap();
+
+        // Various case spellings
+        std::fs::write(dir_a.join("smartfolder.yaml"), "context: work").unwrap();
+        std::fs::write(dir_b.join("SmartFolder.yaml"), "context: privat").unwrap();
+        std::fs::write(dir_c.join("SMARTFOLDER.YAML"), "context: work").unwrap();
+
+        // Hidden dir should be skipped
+        std::fs::write(dir_hidden.join("smartfolder.yaml"), "context: x").unwrap();
+
+        // Unrelated file should not be found
+        std::fs::write(root.join("other.yaml"), "foo: bar").unwrap();
+
+        let found = find_smartfolder_yaml_files(root);
+        assert_eq!(found.len(), 3, "Should find 3 configs (hidden dir excluded)");
+
+        // Verify all expected paths are present
+        let found_strs: Vec<String> = found.iter().map(|p| p.display().to_string()).collect();
+        assert!(found_strs.iter().any(|p| p.contains("invoices")));
+        assert!(found_strs.iter().any(|p| p.contains("medical")));
+        assert!(found_strs.iter().any(|p| p.contains("contracts")));
     }
 }

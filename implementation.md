@@ -60,7 +60,7 @@ Loads smart folder configs from `sorted/{context}/smartfolders.yaml` files. Fall
 
 ### _load_root_smart_folders(root)
 
-Parses `{root}/smartfolders.yaml`. Validates each entry has `context`, `path`, and at least a condition. Resolves relative paths against root. Returns list of `RootSmartFolderEntry` or None.
+Parses `{root}/smartfolders.yaml`. Validates each entry has `context`, `path`, and at least a condition. Resolves relative paths against root. Also processes `smartfolder_paths`: recursively walks each listed directory, discovers `smartfolder.yaml` files (case-insensitive), and creates `RootSmartFolderEntry` for each. Returns `(entries, smartfolder_paths)` tuple.
 
 
 ## orchestrator.py -- DocumentWatcherV2
@@ -275,7 +275,7 @@ Dataclass: `name`, `context`, `path` (resolved absolute Path), `config`.
 
 ### RootSmartFolderReconciler
 
-**reconcile(records):** For each IS_COMPLETE record: find entries matching context. Evaluate condition. Create relative symlinks at configured paths. Remove when no longer matching.
+**reconcile(records):** For each IS_COMPLETE record: find entries matching context. Evaluate condition. Create relative symlinks at configured paths. On filename collision, a numeric suffix (`_1`, `_2`, …) is added. Uses `find_symlink_to_file` for idempotency. Removal covers suffixed symlinks via `remove_symlinks_to_file`.
 
 **cleanup_orphans():** Only remove symlinks whose resolved target is within `sorted/` (safety: don't touch user-created symlinks).
 

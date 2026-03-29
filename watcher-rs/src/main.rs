@@ -5,6 +5,7 @@
 
 mod config;
 mod db;
+mod directus;
 mod models;
 mod orchestrator;
 mod prefilter;
@@ -16,7 +17,7 @@ mod step5;
 mod step6;
 mod step7;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -28,14 +29,18 @@ use axum::response::Json;
 use axum::routing::get;
 use axum::Router;
 use serde_json::json;
+use sqlx::postgres::PgListener;
 use tokio::signal;
+use tokio::sync::Notify;
 use tokio::time::{self, Duration};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::config::{
-    get_username_from_root, SmartFolderConfig, SorterContextManager, WatcherConfig,
+    find_smartfolder_yaml_files, get_username_from_root, SmartFolderConfig, SorterContextManager,
+    WatcherConfig,
 };
 use crate::db::Database;
+use crate::directus::DirectusClient;
 use crate::orchestrator::{
     context_field_names_from_sorter, context_folders_from_sorter,
     contexts_for_api_from_sorter, DocumentWatcherV2,
@@ -186,18 +191,22 @@ fn load_smart_folders(context_manager: &SorterContextManager) -> Option<Vec<Smar
 
 /// Load root-level smart folders from `{root}/smartfolders.yaml`.
 ///
-/// Returns a list of [`RootSmartFolderEntry`] or `None` if file missing/empty.
-fn load_root_smart_folders(root: &Path) -> Option<Vec<RootSmartFolderEntry>> {
+/// Returns `(entries, smartfolder_paths)` where:
+/// - `entries` is the combined list of explicit `smart_folders` entries and
+///   entries discovered via `smartfolder_paths`.
+/// - `smartfolder_paths` is the resolved list of paths from the
+///   `smartfolder_paths` key (used for change detection in step1).
+fn load_root_smart_folders(root: &Path) -> (Option<Vec<RootSmartFolderEntry>>, Vec<PathBuf>) {
     let config_path = root.join("smartfolders.yaml");
     if !config_path.is_file() {
-        return None;
+        return (None, Vec::new());
     }
 
     let content = match std::fs::read_to_string(&config_path) {
         Ok(c) => c,
         Err(e) => {
             warn!("Failed to read {}: {}", config_path.display(), e);
-            return None;
+            return (None, Vec::new());
         }
     };
 
@@ -205,73 +214,165 @@ fn load_root_smart_folders(root: &Path) -> Option<Vec<RootSmartFolderEntry>> {
         Ok(d) => d,
         Err(e) => {
             warn!("Failed to parse {}: {}", config_path.display(), e);
-            return None;
+            return (None, Vec::new());
         }
-    };
-
-    let sf_dict = match data.get("smart_folders") {
-        Some(serde_yaml::Value::Mapping(m)) => m,
-        _ => return None,
     };
 
     let mut entries = Vec::new();
 
-    for (key, sf_data) in sf_dict {
-        let sf_name = match key.as_str() {
-            Some(n) => n.to_string(),
-            None => continue,
-        };
+    // --- Explicit smart_folders entries ---
+    if let Some(serde_yaml::Value::Mapping(sf_dict)) = data.get("smart_folders") {
+        for (key, sf_data) in sf_dict {
+            let sf_name = match key.as_str() {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
 
-        if !sf_data.is_mapping() {
-            warn!("Root smart folder '{}': expected dict, skipping", sf_name);
-            continue;
+            if !sf_data.is_mapping() {
+                warn!("Root smart folder '{}': expected dict, skipping", sf_name);
+                continue;
+            }
+
+            let context = match sf_data.get("context").and_then(|v| v.as_str()) {
+                Some(c) => c.to_string(),
+                None => {
+                    warn!(
+                        "Root smart folder '{}': missing context, skipping",
+                        sf_name
+                    );
+                    continue;
+                }
+            };
+
+            let path_str = match sf_data.get("path").and_then(|v| v.as_str()) {
+                Some(p) => p.to_string(),
+                None => {
+                    warn!("Root smart folder '{}': missing path, skipping", sf_name);
+                    continue;
+                }
+            };
+
+            // Resolve path: absolute stays absolute, relative resolves against root
+            let path = if Path::new(&path_str).is_absolute() {
+                PathBuf::from(&path_str)
+            } else {
+                root.join(&path_str)
+            };
+
+            // Parse condition/filename_regex via SmartFolderConfig
+            let config = match SmartFolderConfig::from_dict(&sf_name, sf_data, &context) {
+                Some(c) => c,
+                None => continue,
+            };
+
+            entries.push(RootSmartFolderEntry {
+                name: sf_name,
+                context,
+                path,
+                config,
+            });
         }
-
-        let context = match sf_data.get("context").and_then(|v| v.as_str()) {
-            Some(c) => c.to_string(),
-            None => {
-                warn!(
-                    "Root smart folder '{}': missing context, skipping",
-                    sf_name
-                );
-                continue;
-            }
-        };
-
-        let path_str = match sf_data.get("path").and_then(|v| v.as_str()) {
-            Some(p) => p.to_string(),
-            None => {
-                warn!("Root smart folder '{}': missing path, skipping", sf_name);
-                continue;
-            }
-        };
-
-        // Resolve path: absolute stays absolute, relative resolves against root
-        let path = if Path::new(&path_str).is_absolute() {
-            PathBuf::from(&path_str)
-        } else {
-            root.join(&path_str)
-        };
-
-        // Parse condition/filename_regex via SmartFolderConfig
-        let config = match SmartFolderConfig::from_dict(&sf_name, sf_data, &context) {
-            Some(c) => c,
-            None => continue,
-        };
-
-        entries.push(RootSmartFolderEntry {
-            name: sf_name,
-            context,
-            path,
-            config,
-        });
     }
 
-    if entries.is_empty() {
+    // --- Discovered entries via smartfolder_paths ---
+    let mut smartfolder_paths = Vec::new();
+    if let Some(serde_yaml::Value::Sequence(paths)) = data.get("smartfolder_paths") {
+        for path_val in paths {
+            if let Some(path_str) = path_val.as_str() {
+                let search_path = if Path::new(path_str).is_absolute() {
+                    PathBuf::from(path_str)
+                } else {
+                    root.join(path_str)
+                };
+                smartfolder_paths.push(search_path.clone());
+
+                for config_file in find_smartfolder_yaml_files(&search_path) {
+                    if let Some(entry) = parse_discovered_smartfolder(&config_file) {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    let result = if entries.is_empty() {
         None
     } else {
         Some(entries)
-    }
+    };
+    (result, smartfolder_paths)
+}
+
+/// Parse a discovered `smartfolder.yaml` into a [`RootSmartFolderEntry`].
+///
+/// The directory containing the config file becomes the output path.
+/// The directory name becomes the smart folder name.
+///
+/// Expected YAML format:
+/// ```yaml
+/// context: arbeit
+/// condition:
+///   field: "type"
+///   value: "Rechnung"
+/// filename_regex: "2025"   # optional
+/// ```
+fn parse_discovered_smartfolder(config_path: &Path) -> Option<RootSmartFolderEntry> {
+    let dir = config_path.parent()?;
+    let name = dir.file_name()?.to_str()?.to_string();
+
+    let content = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(
+                "Failed to read discovered smartfolder {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
+    };
+
+    let data: serde_yaml::Value = match serde_yaml::from_str(&content) {
+        Ok(d) => d,
+        Err(e) => {
+            warn!(
+                "Failed to parse discovered smartfolder {}: {}",
+                config_path.display(),
+                e
+            );
+            return None;
+        }
+    };
+
+    let context = match data.get("context").and_then(|v| v.as_str()) {
+        Some(c) => c.to_string(),
+        None => {
+            warn!(
+                "Discovered smartfolder {}: missing 'context', skipping",
+                config_path.display()
+            );
+            return None;
+        }
+    };
+
+    let config = match SmartFolderConfig::from_dict(&name, &data, &context) {
+        Some(c) => c,
+        None => return None,
+    };
+
+    info!(
+        "Discovered smartfolder: {} (context={}, path={})",
+        name,
+        context,
+        dir.display()
+    );
+
+    Some(RootSmartFolderEntry {
+        name,
+        context,
+        path: dir.to_path_buf(),
+        config,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +383,8 @@ fn load_root_smart_folders(root: &Path) -> Option<Vec<RootSmartFolderEntry>> {
 async fn setup_user(
     user_root: &Path,
     db: Arc<Database>,
+    directus: Option<Arc<DirectusClient>>,
+    db_notify: Arc<Notify>,
     service_url: &str,
     poll_interval: f64,
     processor_timeout: f64,
@@ -295,6 +398,13 @@ async fn setup_user(
     let password_file = user_root.join(".db-password");
     if let Err(e) = db.ensure_user_role(&username, &password_file).await {
         warn!("[{}] Failed to create DB role: {}", username, e);
+    }
+
+    // Ensure a Directus user exists for this mrdocument user
+    if let Some(ref directus) = directus {
+        if let Err(e) = directus.ensure_user(&username, user_root).await {
+            warn!("[{}] Failed to create Directus user: {}", username, e);
+        }
     }
 
     let mut context_field_names = None;
@@ -319,7 +429,7 @@ async fn setup_user(
         }
     }
 
-    let root_smart_folders = load_root_smart_folders(user_root);
+    let (root_smart_folders, smartfolder_paths) = load_root_smart_folders(user_root);
     if let Some(ref rsf) = root_smart_folders {
         info!(
             "[{}] Loaded {} root smart folder(s)",
@@ -328,7 +438,7 @@ async fn setup_user(
         );
     }
 
-    DocumentWatcherV2::new(
+    let mut watcher = DocumentWatcherV2::new(
         user_root.to_path_buf(),
         db,
         service_url.to_string(),
@@ -344,7 +454,10 @@ async fn setup_user(
         max_concurrent,
         Some(username),
         Some(context_manager),
-    )
+        db_notify,
+    );
+    watcher.detector.set_smartfolder_paths(smartfolder_paths);
+    watcher
 }
 
 // ---------------------------------------------------------------------------
@@ -758,6 +871,12 @@ async fn main() -> Result<()> {
     // 3. Database connection
     let db = Arc::new(Database::connect(&database_url).await?);
 
+    // 3b. Directus client (optional — disabled if DIRECTUS_URL not set)
+    let directus = DirectusClient::from_env();
+    if directus.is_some() {
+        info!("Directus integration enabled");
+    }
+
     // 4. Health server
     let ready = Arc::new(AtomicBool::new(false));
     start_health_server(health_port, ready.clone()).await?;
@@ -782,14 +901,21 @@ async fn main() -> Result<()> {
     // 6. Per-user orchestrator setup
     let mut watcher_handles = Vec::new();
     let mut known_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut db_notifiers: HashMap<String, Arc<Notify>> = HashMap::new();
 
     let debounce_seconds = watcher_config.debounce_seconds;
     let full_scan_seconds = watcher_config.full_scan_seconds;
 
     for user_root in &watch_dirs {
+        let username = get_username_from_root(user_root);
+        let db_notify = Arc::new(Notify::new());
+        db_notifiers.insert(username, db_notify.clone());
+
         let watcher = setup_user(
             user_root,
             Arc::clone(&db),
+            directus.clone(),
+            db_notify,
             &mrdocument_url,
             poll_interval,
             processor_timeout,
@@ -810,7 +936,10 @@ async fn main() -> Result<()> {
     let watcher_config_discovery = watcher_config.clone();
     let known_dirs_arc = Arc::new(tokio::sync::Mutex::new(known_dirs));
     let watcher_handles_arc = Arc::new(tokio::sync::Mutex::new(watcher_handles));
+    let db_notifiers_arc = Arc::new(tokio::sync::Mutex::new(db_notifiers));
 
+    let directus_discovery = directus.clone();
+    let db_notifiers_discovery = db_notifiers_arc.clone();
     let discovery_handle = tokio::spawn({
         let known_dirs = known_dirs_arc.clone();
         let handles = watcher_handles_arc.clone();
@@ -820,12 +949,19 @@ async fn main() -> Result<()> {
                 let current_dirs = watcher_config_discovery.get_watch_directories();
                 let mut kd = known_dirs.lock().await;
                 let mut hs = handles.lock().await;
+                let mut notifiers = db_notifiers_discovery.lock().await;
                 for new_dir in current_dirs {
                     if !kd.contains(&new_dir) {
                         info!("New user directory discovered: {}", new_dir.display());
+                        let username = get_username_from_root(&new_dir);
+                        let db_notify = Arc::new(Notify::new());
+                        notifiers.insert(username, db_notify.clone());
+
                         let w = setup_user(
                             &new_dir,
                             Arc::clone(&db_discovery),
+                            directus_discovery.clone(),
+                            db_notify,
                             &mrdocument_url_discovery,
                             poll_interval,
                             processor_timeout,
@@ -837,6 +973,41 @@ async fn main() -> Result<()> {
                         let h = tokio::spawn(run_watcher(w, full_scan_seconds, debounce_seconds));
                         hs.push(h);
                     }
+                }
+            }
+        }
+    });
+
+    // 8. DB LISTEN/NOTIFY listener — wakes user watchers on external updates
+    let db_notifiers_listener = db_notifiers_arc.clone();
+    let database_url_listener = database_url.clone();
+    let db_listener_handle = tokio::spawn(async move {
+        let mut listener = match PgListener::connect(&database_url_listener).await {
+            Ok(l) => l,
+            Err(e) => {
+                error!("Failed to connect PgListener: {} — DB change notifications disabled", e);
+                return;
+            }
+        };
+        if let Err(e) = listener.listen("mrdocument_update").await {
+            error!("Failed to LISTEN on mrdocument_update: {}", e);
+            return;
+        }
+        info!("Listening for DB update notifications (mrdocument_update)");
+
+        loop {
+            match listener.recv().await {
+                Ok(notification) => {
+                    let username = notification.payload();
+                    debug!("DB update notification for user '{}'", username);
+                    let notifiers = db_notifiers_listener.lock().await;
+                    if let Some(notify) = notifiers.get(username) {
+                        notify.notify_one();
+                    }
+                }
+                Err(e) => {
+                    warn!("PgListener error: {} — reconnecting", e);
+                    // sqlx PgListener auto-reconnects, just log and continue
                 }
             }
         }
@@ -861,6 +1032,7 @@ async fn main() -> Result<()> {
     // Graceful shutdown
     ready.store(false, Ordering::Relaxed);
     discovery_handle.abort();
+    db_listener_handle.abort();
 
     // Abort watcher tasks
     let handles = watcher_handles_arc.lock().await;

@@ -214,6 +214,7 @@ impl DocumentWatcherV2 {
         max_concurrent: usize,
         name: Option<String>,
         context_manager: Option<SorterContextManager>,
+        db_notify: Arc<tokio::sync::Notify>,
     ) -> Self {
         let watcher_name = name.clone().unwrap_or_else(|| {
             root.file_name()
@@ -222,7 +223,7 @@ impl DocumentWatcherV2 {
                 .to_string()
         });
 
-        let detector = FilesystemDetector::new(root.clone());
+        let detector = FilesystemDetector::new(root.clone(), db_notify);
         let processor = Processor::new(
             root.clone(),
             watcher_name.clone(),
@@ -466,7 +467,7 @@ impl DocumentWatcherV2 {
     pub fn reload_config(
         &mut self,
         load_smart_folders_fn: &dyn Fn(&SorterContextManager) -> Option<Vec<SmartFolderEntry>>,
-        load_root_smart_folders_fn: &dyn Fn(&Path) -> Option<Vec<RootSmartFolderEntry>>,
+        load_root_smart_folders_fn: &dyn Fn(&Path) -> (Option<Vec<RootSmartFolderEntry>>, Vec<std::path::PathBuf>),
     ) {
         let cm = match &mut self.context_manager {
             Some(cm) => cm,
@@ -488,10 +489,11 @@ impl DocumentWatcherV2 {
         self.smart_folder_reconciler =
             smart_folders.map(|sf| SmartFolderReconciler::new(self.root.clone(), sf));
 
-        // Reload root-level smart folders
-        let root_smart_folders = load_root_smart_folders_fn(&self.root);
+        // Reload root-level smart folders (including discovered smartfolder_paths)
+        let (root_smart_folders, smartfolder_paths) = load_root_smart_folders_fn(&self.root);
         self.root_smart_folder_reconciler =
             root_smart_folders.map(|rsf| RootSmartFolderReconciler::new(self.root.clone(), rsf));
+        self.detector.set_smartfolder_paths(smartfolder_paths);
 
         info!(
             "[{}] Config reloaded: {} context(s)",

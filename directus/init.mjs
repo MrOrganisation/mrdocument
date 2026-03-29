@@ -1,6 +1,6 @@
 // Bootstrap Directus configuration for mrdocument.
 // Registers the documents_v2 collection, configures fields,
-// and creates a "MrDocument User" role with per-user read access.
+// and creates a "MrDocument User" role with per-user read + edit access.
 // Idempotent — safe to run on every container start.
 
 const DIRECTUS_URL = process.env.DIRECTUS_URL ?? 'http://directus:8055';
@@ -89,10 +89,12 @@ async function registerCollection() {
 
 const FIELD_META = [
   // Primary — visible, top of detail page
-  { field: 'id',                meta: { sort: 1,  width: 'half', hidden: false } },
-  { field: 'original_filename', meta: { sort: 2,  width: 'half', hidden: false } },
-  { field: 'assigned_filename', meta: { sort: 3,  width: 'half', hidden: false } },
-  { field: 'output_filename',   meta: { sort: 4,  width: 'half', hidden: false } },
+  { field: 'id',                meta: { sort: 1,  width: 'half', hidden: false, readonly: true } },
+  { field: 'original_filename', meta: { sort: 2,  width: 'half', hidden: false, readonly: true } },
+  { field: 'assigned_filename', meta: { sort: 3,  width: 'half', hidden: false,
+    note: 'Override the auto-generated filename. Leave empty to use the default.',
+  } },
+  { field: 'output_filename',   meta: { sort: 4,  width: 'half', hidden: false, readonly: true } },
   { field: 'state',             meta: { sort: 5,  width: 'half', hidden: false,
     interface: 'select-dropdown',
     options: { choices: [
@@ -104,35 +106,49 @@ const FIELD_META = [
       { text: 'Deleted',          value: 'is_deleted' },
       { text: 'Complete',         value: 'is_complete' },
     ] },
+    note: 'Set to "Needs Processing" to trigger reprocessing.',
   } },
-  { field: 'context',           meta: { sort: 6,  width: 'half', hidden: false } },
-  { field: 'username',          meta: { sort: 7,  width: 'half', hidden: false } },
+  { field: 'context',           meta: { sort: 6,  width: 'half', hidden: false,
+    note: 'Document category (e.g. arbeit, privat). Changing this reclassifies the document.',
+  } },
+  { field: 'username',          meta: { sort: 7,  width: 'half', hidden: false, readonly: true } },
 
-  // Dates
-  { field: 'date_added',        meta: { sort: 10, width: 'half', hidden: false } },
-  { field: 'created_at',        meta: { sort: 11, width: 'half', hidden: false } },
-  { field: 'updated_at',        meta: { sort: 12, width: 'half', hidden: false } },
+  // Dates — readonly system timestamps
+  { field: 'date_added',        meta: { sort: 10, width: 'half', hidden: false, readonly: true,
+    interface: 'datetime', display: 'datetime',
+    options: { includeSeconds: true },
+  } },
+  { field: 'created_at',        meta: { sort: 11, width: 'half', hidden: false, readonly: true,
+    interface: 'datetime', display: 'datetime',
+    options: { includeSeconds: true },
+  } },
+  { field: 'updated_at',        meta: { sort: 12, width: 'half', hidden: false, readonly: true,
+    interface: 'datetime', display: 'datetime',
+    options: { includeSeconds: true },
+  } },
 
-  // JSON — full-width code editors
+  // JSON — metadata is editable, paths are readonly
   { field: 'metadata',          meta: { sort: 20, width: 'full', hidden: false,
+    interface: 'input-code', options: { language: 'JSON' },
+    note: 'Document fields extracted by AI (e.g. date, type, sender). Edit to correct classifications.',
+  } },
+  { field: 'source_paths',      meta: { sort: 21, width: 'full', hidden: false, readonly: true,
     interface: 'input-code', options: { language: 'JSON' } } },
-  { field: 'source_paths',      meta: { sort: 21, width: 'full', hidden: false,
-    interface: 'input-code', options: { language: 'JSON' } } },
-  { field: 'current_paths',     meta: { sort: 22, width: 'full', hidden: false,
+  { field: 'current_paths',     meta: { sort: 22, width: 'full', hidden: false, readonly: true,
     interface: 'input-code', options: { language: 'JSON' } } },
 
   // Technical — hidden from default view
-  { field: 'source_hash',          meta: { sort: 90, hidden: true } },
-  { field: 'hash',                 meta: { sort: 91, hidden: true } },
-  { field: 'content_hash',         meta: { sort: 92, hidden: true } },
-  { field: 'source_content_hash',  meta: { sort: 93, hidden: true } },
-  { field: 'missing_source_paths', meta: { sort: 94, hidden: true } },
-  { field: 'missing_current_paths',meta: { sort: 95, hidden: true } },
-  { field: 'target_path',          meta: { sort: 96, hidden: true } },
-  { field: 'source_reference',     meta: { sort: 97, hidden: true } },
-  { field: 'current_reference',    meta: { sort: 98, hidden: true } },
-  { field: 'duplicate_sources',    meta: { sort: 99, hidden: true } },
-  { field: 'deleted_paths',        meta: { sort: 100, hidden: true } },
+  { field: 'source_hash',          meta: { sort: 90, hidden: true, readonly: true } },
+  { field: 'hash',                 meta: { sort: 91, hidden: true, readonly: true } },
+  { field: 'content_hash',         meta: { sort: 92, hidden: true, readonly: true } },
+  { field: 'source_content_hash',  meta: { sort: 93, hidden: true, readonly: true } },
+  { field: 'missing_source_paths', meta: { sort: 94, hidden: true, readonly: true } },
+  { field: 'missing_current_paths',meta: { sort: 95, hidden: true, readonly: true } },
+  { field: 'target_path',          meta: { sort: 96, hidden: true, readonly: true } },
+  { field: 'source_reference',     meta: { sort: 97, hidden: true, readonly: true } },
+  { field: 'current_reference',    meta: { sort: 98, hidden: true, readonly: true } },
+  { field: 'duplicate_sources',    meta: { sort: 99, hidden: true, readonly: true } },
+  { field: 'deleted_paths',        meta: { sort: 100, hidden: true, readonly: true } },
 ];
 
 async function configureFields() {
@@ -198,32 +214,64 @@ async function ensurePolicy(roleId) {
   return policy.id;
 }
 
+// Fields that users may edit via Directus.
+const USER_EDITABLE_FIELDS = [
+  'metadata',
+  'state',
+  'context',
+  'assigned_filename',
+];
+
 async function ensurePermissions(policyId) {
   const perms = await api(`/permissions?filter[policy][_eq]=${policyId}`);
+
+  // --- read on documents_v2 ---
   const hasRead = perms.some(
     (p) => p.collection === 'documents_v2' && p.action === 'read',
   );
   if (hasRead) {
     log('Read permission already exists.');
-    return;
+  } else {
+    log('Creating read permission (filtered by username = current user)...');
+    await api('/permissions', {
+      method: 'POST',
+      body: {
+        policy: policyId,
+        collection: 'documents_v2',
+        action: 'read',
+        permissions: {
+          username: { _eq: '$CURRENT_USER.external_identifier' },
+        },
+        fields: ['*'],
+      },
+    });
+    log('Read permission created.');
   }
 
-  log('Creating read permission (filtered by username = current user)...');
-  await api('/permissions', {
-    method: 'POST',
-    body: {
-      policy: policyId,
-      collection: 'documents_v2',
-      action: 'read',
-      permissions: {
-        username: { _eq: '$CURRENT_USER.external_identifier' },
+  // --- update on documents_v2 (restricted fields) ---
+  const hasUpdate = perms.some(
+    (p) => p.collection === 'documents_v2' && p.action === 'update',
+  );
+  if (hasUpdate) {
+    log('Update permission already exists.');
+  } else {
+    log('Creating update permission (restricted fields)...');
+    await api('/permissions', {
+      method: 'POST',
+      body: {
+        policy: policyId,
+        collection: 'documents_v2',
+        action: 'update',
+        permissions: {
+          username: { _eq: '$CURRENT_USER.external_identifier' },
+        },
+        fields: USER_EDITABLE_FIELDS,
       },
-      fields: ['*'],
-    },
-  });
-  log('Read permission created.');
+    });
+    log('Update permission created.');
+  }
 
-  // Also grant directus_files read so the app shell works
+  // --- directus_files read (app shell) ---
   const hasFiles = perms.some(
     (p) => p.collection === 'directus_files' && p.action === 'read',
   );
@@ -254,11 +302,8 @@ async function main() {
   await ensurePermissions(policyId);
 
   log('Bootstrap complete.');
-  log('');
-  log('Next steps:');
-  log('  Create users via the Directus admin UI or API:');
-  log('    POST /users { email, password, role: "<role-id>", external_identifier: "<pg_username>" }');
-  log(`  Role ID: ${roleId}`);
+  log(`Role ID: ${roleId}`);
+  log('Users are created automatically by mrdocument-watcher as it discovers user directories.');
 }
 
 main().catch((e) => {
