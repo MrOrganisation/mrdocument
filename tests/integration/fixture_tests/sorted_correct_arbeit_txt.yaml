@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: arbeit_angebot_keller.txt
     path_of_generated_file: generated/arbeit_angebot_keller.txt
-timeout: 300s
+timeout: 15s
 steps:
   - input:
       - sorted/arbeit/arbeit_angebot_keller.txt

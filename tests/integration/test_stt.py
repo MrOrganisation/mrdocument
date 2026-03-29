@@ -54,7 +54,7 @@ class TestSttTranscribeNative:
                 f"{STT_URL}/transcribe",
                 files={"file": ("telefonat.mp3", f, "audio/mpeg")},
                 data={"language": "de-DE"},
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 200
         transcript = resp.json()["transcript"]
@@ -69,7 +69,7 @@ class TestSttTranscribeNative:
                 f"{STT_URL}/transcribe",
                 files={"file": ("telefonat.mp3", f, "audio/mpeg")},
                 data={"language": "de-DE"},
-                timeout=60,
+                timeout=15,
             )
         segments = resp.json()["transcript"]["segments"]
         full_text = " ".join(s["text"] for s in segments)
@@ -84,7 +84,7 @@ class TestSttTranscribeNative:
                 f"{STT_URL}/transcribe",
                 files={"file": ("telefonat.mp3", f, "audio/mpeg")},
                 data={"language": "de-DE"},
-                timeout=60,
+                timeout=15,
             )
         segments = resp.json()["transcript"]["segments"]
         for seg in segments:
@@ -111,7 +111,7 @@ class TestSttConversion:
                 f"{STT_URL}/transcribe",
                 files={"file": ("videocall.mov", f, "video/quicktime")},
                 data={"language": "de-DE"},
-                timeout=120,
+                timeout=15,
             )
         assert resp.status_code == 200
         segments = resp.json()["transcript"]["segments"]
@@ -129,7 +129,7 @@ class TestSttConversion:
                 f"{STT_URL}/transcribe",
                 files={"file": ("sprachnachricht.mp4", f, "video/mp4")},
                 data={"language": "de-DE"},
-                timeout=120,
+                timeout=15,
             )
         assert resp.status_code == 200
         segments = resp.json()["transcript"]["segments"]
@@ -147,7 +147,7 @@ class TestSttConversion:
                 f"{STT_URL}/transcribe",
                 files={"file": ("sorted-wrongctx-audio.m4a", f, "audio/mp4")},
                 data={"language": "de-DE"},
-                timeout=120,
+                timeout=15,
             )
         assert resp.status_code == 200
         segments = resp.json()["transcript"]["segments"]
@@ -174,7 +174,7 @@ class TestSttDiarization:
                     "enable_diarization": "true",
                     "diarization_speaker_count": "2",
                 },
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 200
         segments = resp.json()["transcript"]["segments"]
@@ -193,7 +193,7 @@ class TestSttDiarization:
                     "language": "de-DE",
                     "enable_diarization": "false",
                 },
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 200
         segments = resp.json()["transcript"]["segments"]
@@ -219,7 +219,7 @@ class TestSttWordTimestamps:
                     "language": "de-DE",
                     "enable_word_timestamps": "true",
                 },
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 200
         segments = resp.json()["transcript"]["segments"]
@@ -237,7 +237,7 @@ class TestSttWordTimestamps:
                     "language": "de-DE",
                     "enable_word_timestamps": "true",
                 },
-                timeout=60,
+                timeout=15,
             )
         segments = resp.json()["transcript"]["segments"]
         words_found = False
@@ -269,7 +269,7 @@ class TestSttKeyterms:
                     "language": "de-DE",
                     "keyterms": json.dumps(["Keller", "Partner", "Bueroausstattung"]),
                 },
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 200
         assert len(resp.json()["transcript"]["segments"]) > 0
@@ -285,7 +285,7 @@ class TestSttKeyterms:
                     "language": "de-DE",
                     "keyterms": "not valid json",
                 },
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 400 or resp.status_code == 422
 
@@ -337,7 +337,7 @@ class TestSttModel:
                     "language": "de-DE",
                     "elevenlabs_model": "scribe_v1",
                 },
-                timeout=60,
+                timeout=15,
             )
         assert resp.status_code == 200
         assert len(resp.json()["transcript"]["segments"]) > 0

@@ -51,7 +51,7 @@ class TestConfig:
 
     sync_folder: Path
     poll_interval: float = 5.0
-    max_timeout: float = 300.0
+    max_timeout: float = 15.0
 
     # Derived paths (set in __post_init__)
     incoming_dir: Path = field(init=False)
@@ -98,7 +98,7 @@ def _load_test_config() -> TestConfig:
     return TestConfig(
         sync_folder=sync_path,
         poll_interval=float(raw.get("poll_interval", 5)),
-        max_timeout=float(raw.get("max_timeout", 300)),
+        max_timeout=float(raw.get("max_timeout", 15)),
     )
 
 
@@ -281,7 +281,7 @@ def poll_for_smart_folder_symlink(
     smart_folder_name: str,
     filename: str,
     interval: float = 2.0,
-    timeout: float = 30.0,
+    timeout: float = 15.0,
 ) -> bool:
     """Poll for a smart folder symlink to appear (handles async creation delay)."""
     deadline = time.monotonic() + timeout
@@ -337,7 +337,7 @@ def poll_for_audio_link_symlink(
     audio_ext: str,
     archive_dir: Path,
     interval: float = 2.0,
-    timeout: float = 30.0,
+    timeout: float = 15.0,
 ) -> bool:
     """Poll for an audio link symlink to appear next to a transcript file."""
     deadline = time.monotonic() + timeout
@@ -591,7 +591,7 @@ def ensure_service_ready() -> None:
     )
 
 
-def restart_watcher(timeout: float = 60) -> None:
+def restart_watcher(timeout: float = 15) -> None:
     """Restart the watcher Docker container and wait for it to become healthy.
 
     Uses ``docker restart`` to stop and start the container, then polls
@@ -600,7 +600,7 @@ def restart_watcher(timeout: float = 60) -> None:
     import subprocess
     subprocess.run(
         ["docker", "restart", "integration-mrdocument-watcher-1"],
-        check=True, capture_output=True, timeout=30,
+        check=True, capture_output=True, timeout=15,
     )
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

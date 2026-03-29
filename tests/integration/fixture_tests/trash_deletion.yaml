@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: trash_test_doc.txt
     content: "Test document trash_test_doc. Unique: yaml-fixture-trash-test"
-timeout: 300s
+timeout: 15s
 steps:
   # Step 1: Process through incoming
   - input:

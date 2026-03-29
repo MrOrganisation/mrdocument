@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: reclassify_unknown.pdf
     path_of_generated_file: generated/arbeit_rechnung_schulze.pdf
-timeout: 60s
+timeout: 15s
 steps:
   # Place a file in reclassify/ that matches no existing record → error
   - input:

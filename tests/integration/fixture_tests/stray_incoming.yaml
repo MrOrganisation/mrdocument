@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: stray_archive_doc.txt
     content: "Unknown document content. Unique: yaml-fixture-test"
-timeout: 300s
+timeout: 15s
 steps:
   - input:
       - incoming/stray_archive_doc.txt

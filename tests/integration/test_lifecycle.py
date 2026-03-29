@@ -456,7 +456,7 @@ class TestSmartFolderRemovalOnMove:
         leaf_dir = sorted_file.parent
         assert poll_for_smart_folder_symlink(
             leaf_dir, "rechnungen", sorted_file.name,
-            timeout=60,
+            timeout=15,
         ), (
             f"Smart folder 'rechnungen' symlink not found at "
             f"{leaf_dir / 'rechnungen' / sorted_file.name}"
@@ -504,7 +504,7 @@ class TestBrokenSmartFolderCleanup:
         leaf_dir = sorted_file.parent
         assert poll_for_smart_folder_symlink(
             leaf_dir, "rechnungen", sorted_file.name,
-            timeout=60,
+            timeout=15,
         ), (
             f"Smart folder 'rechnungen' symlink not found at "
             f"{leaf_dir / 'rechnungen' / sorted_file.name}"
@@ -657,7 +657,7 @@ class TestMigrationDedup:
     def _stop_watcher():
         subprocess.run(
             ["docker", "stop", "integration-mrdocument-watcher-1"],
-            check=True, capture_output=True, timeout=30,
+            check=True, capture_output=True, timeout=15,
         )
 
     @staticmethod

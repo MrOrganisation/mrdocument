@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: arbeit_rechnung_keller.txt
     path_of_generated_file: generated/arbeit_rechnung_keller.txt
-timeout: 300s
+timeout: 15s
 steps:
   # Step 1: incoming → processed + archive
   - input:

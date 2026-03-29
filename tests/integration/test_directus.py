@@ -64,7 +64,7 @@ class TestDirectusUserProvisioning:
         users_before = directus_get_users(external_identifier="testuser")
         assert len(users_before) == 1
 
-        restart_watcher(timeout=60)
+        restart_watcher(timeout=15)
 
         # Give the watcher a moment to run setup_user again
         time.sleep(3)

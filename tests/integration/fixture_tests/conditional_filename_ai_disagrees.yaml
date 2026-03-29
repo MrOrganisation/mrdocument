@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: condpattern-audio.m4a
     path_of_generated_file: generated/condpattern-audio.m4a
-timeout: 300s
+timeout: 15s
 steps:
   - input:
       - sorted/testctx/Notiz/condpattern-audio.m4a

@@ -5,7 +5,7 @@ files:
     content: ""
   - filename: error_test_doc.txt
     content: "Valid text content for error_test_doc. Unique: yaml-fixture-recovery"
-timeout: 300s
+timeout: 15s
 steps:
   # Phase 1: Empty PDF → error/
   - input:

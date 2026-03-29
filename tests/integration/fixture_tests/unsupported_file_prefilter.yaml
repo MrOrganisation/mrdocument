@@ -7,7 +7,7 @@ files:
     content: "unsupported file content"
   - filename: thesis.tex
     content: "unsupported file content"
-timeout: 60s
+timeout: 15s
 steps:
   - input:
       - incoming/Montserrat-Bold.ttf

@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: arbeit_vertrag_fischer.pdf
     path_of_generated_file: generated/arbeit_vertrag_fischer.pdf
-timeout: 60s
+timeout: 15s
 steps:
   - input:
       - sorted/foo/arbeit_vertrag_fischer.pdf

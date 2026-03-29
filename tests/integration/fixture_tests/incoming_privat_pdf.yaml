@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: privat_arztbrief_braun.pdf
     path_of_generated_file: generated/privat_arztbrief_braun.pdf
-timeout: 300s
+timeout: 15s
 steps:
   # Step 1: incoming → processed + archive
   - input:

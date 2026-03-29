@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: dup_incoming_doc.txt
     content: "Test document dup_incoming_doc. Unique: yaml-fixture-dup-test"
-timeout: 300s
+timeout: 15s
 steps:
   # Step 1: Process the file normally
   - input:

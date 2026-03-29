@@ -197,18 +197,18 @@ class FixtureRunner:
         """Stop the watcher container."""
         _subprocess.run(
             ["docker", "stop", WATCHER_CONTAINER],
-            check=True, capture_output=True, timeout=30,
+            check=True, capture_output=True, timeout=15,
         )
 
     def _start_watcher(self):
         """Start the watcher container and wait for it to become healthy."""
         _subprocess.run(
             ["docker", "start", WATCHER_CONTAINER],
-            check=True, capture_output=True, timeout=30,
+            check=True, capture_output=True, timeout=15,
         )
         from urllib.request import urlopen
         from urllib.error import URLError
-        deadline = time.monotonic() + 60
+        deadline = time.monotonic() + 15
         while time.monotonic() < deadline:
             try:
                 with urlopen(WATCHER_HEALTH_URL, timeout=3) as resp:
@@ -218,5 +218,5 @@ class FixtureRunner:
                 pass
             time.sleep(1)
         raise TimeoutError(
-            f"Watcher not healthy at {WATCHER_HEALTH_URL} after 60s"
+            f"Watcher not healthy at {WATCHER_HEALTH_URL} after 15s"
         )

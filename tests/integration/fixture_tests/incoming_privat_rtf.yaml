@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: privat_kontoauszug_sparkasse.rtf
     path_of_generated_file: generated/privat_kontoauszug_sparkasse.rtf
-timeout: 300s
+timeout: 15s
 steps:
   # Step 1: incoming → processed + archive
   - input:

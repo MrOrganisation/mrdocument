@@ -3,7 +3,7 @@ contexts:
 files:
   - filename: sorted_wrongctx_pdf.pdf
     path_of_generated_file: generated/sorted_wrongctx_pdf.pdf
-timeout: 300s
+timeout: 15s
 steps:
   - input:
       - sorted/arbeit/sorted_wrongctx_pdf.pdf

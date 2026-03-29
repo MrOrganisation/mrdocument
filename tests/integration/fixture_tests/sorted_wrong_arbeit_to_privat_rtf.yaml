@@ -4,7 +4,7 @@ contexts:
 files:
   - filename: arbeit_vertrag_fischer.rtf
     path_of_generated_file: generated/arbeit_vertrag_fischer.rtf
-timeout: 300s
+timeout: 15s
 steps:
   - input:
       - sorted/privat/arbeit_vertrag_fischer.rtf

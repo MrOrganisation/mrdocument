@@ -4,7 +4,7 @@ contexts:
 files:
   - filename: privat_arztbrief_mueller.pdf
     path_of_generated_file: generated/privat_arztbrief_mueller.pdf
-timeout: 300s
+timeout: 15s
 steps:
   - input:
       - sorted/arbeit/privat_arztbrief_mueller.pdf

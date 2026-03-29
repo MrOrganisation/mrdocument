@@ -53,7 +53,7 @@ def _make_segments(n, chars_per_segment=200):
 class TestTranscriptChunking:
     """Test that large transcripts are chunked and reassembled correctly."""
 
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(15)
     def test_small_transcript_single_chunk(self):
         """A small transcript (<48k tokens) goes through as one chunk."""
         segments = _make_segments(10)
@@ -66,7 +66,7 @@ class TestTranscriptChunking:
                 "filename": "small-test.m4a",
                 "contexts": [TEST_CONTEXT],
             },
-            timeout=120,
+            timeout=15,
         )
         assert resp.status_code == 200, f"Failed: {resp.text}"
         data = resp.json()
@@ -81,7 +81,7 @@ class TestTranscriptChunking:
             assert "start" in seg
             assert "end" in seg
 
-    @pytest.mark.timeout(300)
+    @pytest.mark.timeout(15)
     def test_large_transcript_chunked(self):
         """A large transcript (>48k output tokens) is split into chunks.
 
@@ -103,7 +103,7 @@ class TestTranscriptChunking:
                 "filename": "large-test.m4a",
                 "contexts": [TEST_CONTEXT],
             },
-            timeout=300,
+            timeout=15,
         )
         assert resp.status_code == 200, f"Failed: {resp.text}"
         data = resp.json()
@@ -122,7 +122,7 @@ class TestTranscriptChunking:
             assert seg["start"] == round(i * 3.0, 2)
             assert seg["end"] == round(i * 3.0 + 2.8, 2)
 
-    @pytest.mark.timeout(120)
+    @pytest.mark.timeout(15)
     def test_segment_metadata_preserved(self):
         """Timestamps and speaker tags survive the chunking round-trip."""
         segments = _make_segments(20)
@@ -135,7 +135,7 @@ class TestTranscriptChunking:
                 "filename": "metadata-test.m4a",
                 "contexts": [TEST_CONTEXT],
             },
-            timeout=120,
+            timeout=15,
         )
         assert resp.status_code == 200
         corrected = resp.json()["corrected_json"]
