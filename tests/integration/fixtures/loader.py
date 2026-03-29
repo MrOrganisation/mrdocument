@@ -59,7 +59,12 @@ class StartWatcherAction:
     pass
 
 
-InputAction = Union[CopyAction, MoveAction, DeleteAction, CopyFromTreeAction, MkdirAction, SleepAction, StopWatcherAction, StartWatcherAction]
+@dataclass
+class SqlAction:
+    sql: str
+
+
+InputAction = Union[CopyAction, MoveAction, DeleteAction, CopyFromTreeAction, MkdirAction, SleepAction, StopWatcherAction, StartWatcherAction, SqlAction]
 
 
 @dataclass
@@ -118,6 +123,8 @@ def _parse_input(raw, files: dict[str, FileRef]) -> InputAction:
             return MkdirAction(path=raw["mkdir"])
         if "sleep" in raw:
             return SleepAction(seconds=float(raw["sleep"]))
+        if "sql" in raw:
+            return SqlAction(sql=raw["sql"])
     if raw == "stop_watcher":
         return StopWatcherAction()
     if raw == "start_watcher":

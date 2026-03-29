@@ -16,11 +16,16 @@ from .loader import (
     MkdirAction,
     MoveAction,
     SleepAction,
+    SqlAction,
     StartWatcherAction,
     StepSpec,
     StopWatcherAction,
 )
 from .scanner import TreeMatchResult, match_tree, scan_tree
+
+DB_CONTAINER = os.environ.get(
+    "DB_CONTAINER", "integration-mrdocument-db-1"
+)
 
 WATCHER_CONTAINER = os.environ.get(
     "WATCHER_CONTAINER", "integration-mrdocument-watcher-1"
@@ -81,6 +86,8 @@ class FixtureRunner:
                 self._mkdir(action)
             elif isinstance(action, SleepAction):
                 time.sleep(action.seconds)
+            elif isinstance(action, SqlAction):
+                self._run_sql(action)
             elif isinstance(action, StopWatcherAction):
                 self._stop_watcher()
             elif isinstance(action, StartWatcherAction):
@@ -174,6 +181,17 @@ class FixtureRunner:
     def _mkdir(self, action: MkdirAction):
         """Create a directory."""
         (self.sync_folder / action.path).mkdir(parents=True, exist_ok=True)
+
+    def _run_sql(self, action: SqlAction):
+        """Execute a SQL statement against the test database."""
+        _subprocess.run(
+            [
+                "docker", "exec", DB_CONTAINER,
+                "psql", "-U", "mrdocument", "-d", "mrdocument",
+                "-c", action.sql,
+            ],
+            check=True, capture_output=True, text=True, timeout=10,
+        )
 
     def _stop_watcher(self):
         """Stop the watcher container."""
