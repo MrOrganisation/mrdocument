@@ -480,6 +480,47 @@ class TestSmartFolderRemovalOnMove:
         ), f"Smart folder symlink not removed: {old_sf_link}"
 
 
+class TestSmartFolderTagCondition:
+    """Smart folder symlink created when tags are added via SQL (Directus edit).
+
+    Process a document to sorted/arbeit/, then add a tag via SQL UPDATE.
+    The 'wichtig' smart folder matches ``tags: .*wichtig.*``, so a symlink
+    should appear after the watcher picks up the DB change.
+    """
+
+    def test_tag_triggers_smart_folder(
+        self, test_config: TestConfig, clean_working_dirs,
+    ):
+        file_stem = "sf_tags_doc"
+        context = "arbeit"
+        date = "2025-12-18"
+
+        sorted_file, _ = _process_to_sorted(
+            test_config, file_stem, context, date,
+        )
+
+        # No 'wichtig' symlink yet (no tags set)
+        leaf_dir = sorted_file.parent
+        sf_link = leaf_dir / "wichtig" / sorted_file.name
+        assert not sf_link.exists(), f"Symlink should not exist yet: {sf_link}"
+
+        # Add tag via SQL (simulates Directus edit)
+        db_exec(
+            "UPDATE mrdocument.documents_v2 "
+            "SET tags = '[\"wichtig\"]'::jsonb "
+            f"WHERE original_filename = '{file_stem}.txt'"
+        )
+
+        # Poll for the smart folder symlink to appear
+        assert poll_for_smart_folder_symlink(
+            leaf_dir, "wichtig", sorted_file.name,
+            timeout=15,
+        ), (
+            f"Smart folder 'wichtig' symlink not found at {sf_link} "
+            f"after adding tag via SQL"
+        )
+
+
 class TestBrokenSmartFolderCleanup:
     """Broken smart folder symlinks cleaned up after source file deleted
     (via trash/).

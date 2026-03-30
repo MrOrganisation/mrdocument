@@ -126,6 +126,12 @@ const FIELD_META = [
     options: { includeSeconds: true },
   } },
 
+  // Tags — user-editable list of strings
+  { field: 'tags',              meta: { sort: 15, width: 'full', hidden: false,
+    interface: 'tags', options: { iconRight: 'label' },
+    note: 'User-defined tags. Used for smart folder conditions.',
+  } },
+
   // JSON — metadata is editable, paths are readonly
   { field: 'metadata',          meta: { sort: 20, width: 'full', hidden: false,
     interface: 'input-code', options: { language: 'JSON' },
@@ -216,6 +222,7 @@ async function ensurePolicy(roleId) {
 // Fields that users may edit via Directus.
 const USER_EDITABLE_FIELDS = [
   'metadata',
+  'tags',
   'context',
 ];
 

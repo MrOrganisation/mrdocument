@@ -95,6 +95,13 @@ BEGIN
     ) THEN
         ALTER TABLE mrdocument.documents_v2 ADD COLUMN date_added DATE;
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'tags'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN tags JSONB NOT NULL DEFAULT '[]';
+    END IF;
 END
 $$;
 
@@ -343,6 +350,15 @@ impl Database {
 
         let context: Option<String> = row.try_get("context")?;
         let metadata: Option<serde_json::Value> = row.try_get("metadata")?;
+        let tags_json: serde_json::Value = row.try_get("tags")?;
+        let tags: Vec<String> = tags_json
+            .as_array()
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let assigned_filename: Option<String> = row.try_get("assigned_filename")?;
         let hash: Option<String> = row.try_get("hash")?;
         let content_hash: Option<String> = row.try_get("content_hash")?;
@@ -391,6 +407,7 @@ impl Database {
             missing_current_paths: Self::json_to_path_entries(&missing_current_paths_json),
             context,
             metadata,
+            tags,
             assigned_filename,
             hash,
             content_hash,
@@ -431,6 +448,13 @@ impl Database {
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect(),
         );
+        let tags_json = serde_json::Value::Array(
+            record
+                .tags
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
 
         sqlx::query(
             r#"
@@ -438,7 +462,7 @@ impl Database {
                 id, original_filename, source_hash, source_content_hash,
                 source_paths, current_paths,
                 missing_source_paths, missing_current_paths,
-                context, metadata, assigned_filename, hash, content_hash,
+                context, metadata, tags, assigned_filename, hash, content_hash,
                 output_filename, state,
                 target_path, source_reference, current_reference,
                 duplicate_sources, deleted_paths,
@@ -447,11 +471,11 @@ impl Database {
                 $1, $2, $3, $4,
                 $5, $6,
                 $7, $8,
-                $9, $10, $11, $12, $13,
-                $14, $15,
-                $16, $17, $18,
-                $19, $20,
-                $21, $22
+                $9, $10, $11, $12, $13, $14,
+                $15, $16,
+                $17, $18, $19,
+                $20, $21,
+                $22, $23
             )
             "#,
         )
@@ -465,6 +489,7 @@ impl Database {
         .bind(&missing_current_json)
         .bind(&record.context)
         .bind(&record.metadata)
+        .bind(&tags_json)
         .bind(&record.assigned_filename)
         .bind(&record.hash)
         .bind(&record.content_hash)
@@ -520,6 +545,13 @@ impl Database {
                 .map(|s| serde_json::Value::String(s.clone()))
                 .collect(),
         );
+        let tags_json = serde_json::Value::Array(
+            record
+                .tags
+                .iter()
+                .map(|s| serde_json::Value::String(s.clone()))
+                .collect(),
+        );
 
         sqlx::query(
             r#"
@@ -533,17 +565,18 @@ impl Database {
                 missing_current_paths = $8,
                 context = $9,
                 metadata = $10,
-                assigned_filename = $11,
-                hash = $12,
-                content_hash = $13,
-                output_filename = $14,
-                state = $15,
-                target_path = $16,
-                source_reference = $17,
-                current_reference = $18,
-                duplicate_sources = $19,
-                deleted_paths = $20,
-                date_added = $21
+                tags = $11,
+                assigned_filename = $12,
+                hash = $13,
+                content_hash = $14,
+                output_filename = $15,
+                state = $16,
+                target_path = $17,
+                source_reference = $18,
+                current_reference = $19,
+                duplicate_sources = $20,
+                deleted_paths = $21,
+                date_added = $22
             WHERE id = $1
             "#,
         )
@@ -557,6 +590,7 @@ impl Database {
         .bind(&missing_current_json)
         .bind(&record.context)
         .bind(&record.metadata)
+        .bind(&tags_json)
         .bind(&record.assigned_filename)
         .bind(&record.hash)
         .bind(&record.content_hash)

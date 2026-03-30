@@ -99,7 +99,7 @@ impl SmartFolderReconciler {
             };
 
             // Build string metadata for condition evaluation
-            let str_fields = build_str_fields(&record.metadata);
+            let str_fields = build_str_fields(&record.metadata, &record.tags);
 
             for &idx in &entry_indices {
                 let entry = &self.smart_folders[idx];
@@ -359,7 +359,7 @@ impl RootSmartFolderReconciler {
                 None => continue,
             };
 
-            let str_fields = build_str_fields(&record.metadata);
+            let str_fields = build_str_fields(&record.metadata, &record.tags);
 
             for entry in &self.entries {
                 if entry.context != ctx {
@@ -496,8 +496,13 @@ fn is_symlink(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Build a `HashMap<String, String>` from record metadata for condition evaluation.
-fn build_str_fields(metadata: &Option<serde_json::Value>) -> HashMap<String, String> {
+/// Build a `HashMap<String, String>` from record metadata and tags for
+/// condition evaluation.
+///
+/// Metadata string values are inserted directly.  Tags are joined with `,`
+/// under the key `"tags"` so that smart folder conditions can match
+/// individual tags via regex (e.g. `value: ".*important.*"`).
+fn build_str_fields(metadata: &Option<serde_json::Value>, tags: &[String]) -> HashMap<String, String> {
     let mut fields = HashMap::new();
     if let Some(serde_json::Value::Object(map)) = metadata {
         for (k, v) in map {
@@ -511,6 +516,9 @@ fn build_str_fields(metadata: &Option<serde_json::Value>) -> HashMap<String, Str
                 }
             }
         }
+    }
+    if !tags.is_empty() {
+        fields.insert("tags".to_string(), tags.join(","));
     }
     fields
 }
@@ -1079,6 +1087,81 @@ mod tests {
         r.metadata = Some(serde_json::json!({"doc_type": "memo"}));
         reconciler.reconcile(&[r]);
         assert!(root.join("sorted/work/non_invoices/memo.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_matches_tag() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let cond = make_statement("tags", ".*important.*");
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("important", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.tags = vec!["urgent".into(), "important".into()];
+        reconciler.reconcile(&[r]);
+        assert!(root.join("sorted/work/important/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_tag_no_match() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let cond = make_statement("tags", ".*important.*");
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("important", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let mut r = make_record_in_sorted("work", "invoice.pdf");
+        r.tags = vec!["urgent".into(), "routine".into()];
+        reconciler.reconcile(&[r]);
+        assert!(!root.join("sorted/work/important/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_condition_tag_empty() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().to_path_buf();
+        setup_sorted_file(&root, "work", "invoice.pdf");
+
+        let cond = make_statement("tags", ".*important.*");
+        let sf = SmartFolderEntry {
+            context: "work".into(),
+            config: make_sf_config("important", Some(cond), None),
+        };
+        let reconciler = SmartFolderReconciler::new(root.clone(), vec![sf]);
+
+        let r = make_record_in_sorted("work", "invoice.pdf");
+        // r.tags is empty by default
+        reconciler.reconcile(&[r]);
+        assert!(!root.join("sorted/work/important/invoice.pdf").exists());
+    }
+
+    #[test]
+    fn test_build_str_fields_includes_tags() {
+        let metadata = Some(serde_json::json!({"type": "invoice"}));
+        let tags = vec!["foo".to_string(), "bar".to_string()];
+        let fields = build_str_fields(&metadata, &tags);
+        assert_eq!(fields.get("type").unwrap(), "invoice");
+        assert_eq!(fields.get("tags").unwrap(), "foo,bar");
+    }
+
+    #[test]
+    fn test_build_str_fields_empty_tags_omitted() {
+        let metadata = Some(serde_json::json!({"type": "invoice"}));
+        let tags: Vec<String> = vec![];
+        let fields = build_str_fields(&metadata, &tags);
+        assert_eq!(fields.get("type").unwrap(), "invoice");
+        assert!(!fields.contains_key("tags"));
     }
 
     #[test]

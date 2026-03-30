@@ -3,3 +3,7 @@ smart_folders:
     condition:
       field: "type"
       value: "Rechnung"
+  wichtig:
+    condition:
+      field: "tags"
+      value: ".*wichtig.*"

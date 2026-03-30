@@ -203,6 +203,12 @@ DOCUMENT_METADATA = {
         "sender": "Keller und Partner",
         "date": "2025-12-12",
     },
+    "sf_tags_doc": {
+        "context": "arbeit",
+        "type": "Vertrag",
+        "sender": "Fischer AG",
+        "date": "2025-12-18",
+    },
     # Sorted wrong-context tests (AI reports different context than folder)
     "sorted_wrongctx_pdf": {
         "context": "privat",

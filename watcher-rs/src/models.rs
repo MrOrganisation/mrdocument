@@ -174,6 +174,7 @@ pub struct Record {
     // Content
     pub context: Option<String>,
     pub metadata: Option<serde_json::Value>,
+    pub tags: Vec<String>,
     pub assigned_filename: Option<String>,
     pub hash: Option<String>,
     pub content_hash: Option<String>,
@@ -213,6 +214,7 @@ impl Record {
             missing_current_paths: Vec::new(),
             context: None,
             metadata: None,
+            tags: Vec::new(),
             assigned_filename: None,
             hash: None,
             content_hash: None,
