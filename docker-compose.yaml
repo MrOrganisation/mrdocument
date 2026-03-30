@@ -223,6 +223,42 @@ services:
       directus:
         condition: service_healthy
 
+  mcp-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp-server
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+      cache_from:
+        - localhost:5000/mcp-server:latest
+    image: mcp-server:latest-custom
+    container_name: mcp-server
+    restart: unless-stopped
+    environment:
+      DATABASE_HOST: mrdocument-db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: mrdocument
+      SYNC_ROOT: /sync
+      MCP_PORT: 8091
+      LOG_DIR: /var/log/mcp-server
+      LOG_LEVEL: INFO
+    networks:
+      - mrdocument-net
+    ports:
+      - "127.0.0.1:8091:8091"
+    volumes:
+      - ~/data/syncthing/sync:/sync:ro
+      - ~/log/mcp-server:/var/log/mcp-server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8091/health"]
+      start_period: 10s
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    depends_on:
+      mrdocument-db:
+        condition: service_healthy
+
   mrdocument-watcher:
     build:
       context: .

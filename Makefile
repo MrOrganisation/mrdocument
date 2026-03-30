@@ -1,11 +1,11 @@
 .PHONY: build up down \
-       build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db \
+       build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db build-mcp-server \
        build-amd64 \
        push \
        release \
        test test-unit test-integration test-integration-syncthing \
        test-claude-code-adapter \
-       peek-watcher peek-service peek-anthropic-adapter peek-stt \
+       peek-watcher peek-service peek-anthropic-adapter peek-stt peek-mcp-server \
        dump-db
 
 # Disable BuildKit provenance attestation (stalls on some setups)
@@ -23,13 +23,13 @@ BRANCH     := $(shell git rev-parse --abbrev-ref HEAD)
 COMMIT     := $(shell git rev-parse --short HEAD)
 IMAGE_TAG  := $(VERSION)-$(BRANCH)-$(COMMIT)
 REGISTRY   := 127.0.0.1:5000
-RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter claude-code-adapter mrdocument-db directus-init
+RELEASE_IMAGES := mrdocument-service mrdocument-watcher stt ocrmypdf anthropic-adapter claude-code-adapter mrdocument-db directus-init mcp-server
 
 # ==============================================================================
 # Build / Up / Down
 # ==============================================================================
 
-build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db build-directus-init
+build: build-service build-watcher build-stt build-ocrmypdf build-anthropic-adapter build-db build-directus-init build-mcp-server
 
 build-service:
 	$(COMPOSE) build mrdocument-service
@@ -51,6 +51,9 @@ build-db:
 
 build-directus-init:
 	$(COMPOSE) build directus-init
+
+build-mcp-server:
+	$(COMPOSE) build mcp-server
 
 CLAUDE_CODE_OVERRIDE := docker-compose.claude-code.yaml
 COMPOSE_CLAUDE_CODE := $(COMPOSE) -f docker-compose.yaml -f $(CLAUDE_CODE_OVERRIDE)
@@ -90,6 +93,7 @@ build-amd64:
 	$(call buildx_image,Dockerfile.claude-code-adapter,claude-code-adapter)
 	$(call buildx_image,Dockerfile.db,mrdocument-db)
 	$(call buildx_image,Dockerfile.directus-init,directus-init)
+	$(call buildx_image,Dockerfile.mcp-server,mcp-server)
 
 define buildx_push
 	docker buildx build \
@@ -113,6 +117,7 @@ push-amd64:
 	$(call buildx_push,Dockerfile.claude-code-adapter,claude-code-adapter)
 	$(call buildx_push,Dockerfile.db,mrdocument-db)
 	$(call buildx_push,Dockerfile.directus-init,directus-init)
+	$(call buildx_push,Dockerfile.mcp-server,mcp-server)
 
 release-amd64:
 	@for img in $(RELEASE_IMAGES); do \
@@ -174,9 +179,10 @@ release:
 
 test: test-unit test-integration
 
-# --- Unit tests (Rust) ---
+# --- Unit tests (Rust + MCP server Python) ---
 test-unit:
 	cd watcher-rs && cargo test -- --nocapture
+	cd mcp-server && python3 -m pytest tests/ -v --ignore=tests/test_integration_db.py
 
 # --- Claude Code adapter tests (live, requires valid ~/.claude credentials) ---
 ADAPTER_TEST_COMPOSE := docker compose -f tests/claude-code-adapter/docker-compose.yaml
@@ -246,7 +252,11 @@ test-integration:
 	@echo "Running integration tests..."
 	cd tests/integration && bash -c 'set -o pipefail && poetry run pytest $(INTEGRATION_TESTS) -v --timeout=300 2>&1 | tee logs/test-run.log' ; \
 	EXIT_CODE=$$? ; \
-	cd ../.. ; \
+	echo "Running MCP server integration tests..." ; \
+	cd ../../mcp-server && python3 -m pytest tests/test_integration_db.py -v --timeout=60 2>&1 | tee ../tests/integration/logs/mcp-test-run.log ; \
+	MCP_EXIT=$$? ; \
+	if [ $$EXIT_CODE -eq 0 ]; then EXIT_CODE=$$MCP_EXIT; fi ; \
+	cd .. ; \
 	$(call integration_logs,$(INTEGRATION_COMPOSE)) ; \
 	exit $$EXIT_CODE
 
@@ -292,6 +302,9 @@ peek-anthropic-adapter:
 
 peek-stt:
 	$(COMPOSE) exec -it stt bash
+
+peek-mcp-server:
+	$(COMPOSE) exec -it mcp-server bash
 
 dump-db:
 	$(COMPOSE) up -d mrdocument-db --wait
