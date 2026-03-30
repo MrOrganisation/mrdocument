@@ -209,7 +209,7 @@ export PUID ?= $(shell id -u)
 export PGID ?= $(shell id -g)
 
 INTEGRATION_COMPOSE := tests/integration/docker-compose.fast.yaml
-INTEGRATION_TESTS ?= test_stt.py test_documents.py test_audio.py test_lifecycle.py fixture_tests/
+INTEGRATION_TESTS ?= test_stt.py test_documents.py test_audio.py test_lifecycle.py test_extract_text.py fixture_tests/
 
 SYNCTHING_COMPOSE := tests/integration/docker-compose.service-mock.yaml
 SYNCTHING_TESTS ?= test_stt.py test_migration.py test_documents.py test_audio.py
@@ -244,7 +244,7 @@ test-integration:
 	@echo "Building integration test containers..."
 	docker compose -f $(INTEGRATION_COMPOSE) down -v
 	docker compose -f $(INTEGRATION_COMPOSE) kill
-	docker compose -f $(INTEGRATION_COMPOSE) build
+	docker compose -f $(INTEGRATION_COMPOSE) build --builder default
 	@echo "Starting containers..."
 	docker compose -f $(INTEGRATION_COMPOSE) up -d --force-recreate
 	@echo "Waiting for service to become healthy..."

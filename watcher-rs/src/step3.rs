@@ -73,7 +73,7 @@ pub static CONTENT_TYPE_MAP: Lazy<HashMap<&'static str, &'static str>> = Lazy::n
 });
 
 /// Get MIME content type for a file extension.
-fn get_content_type(ext: &str) -> &'static str {
+pub fn get_content_type(ext: &str) -> &'static str {
     CONTENT_TYPE_MAP
         .get(ext)
         .copied()

@@ -539,15 +539,37 @@ async fn backfill_content_hashes(db: &Database, root: &Path, username: &str) -> 
 /// Backfill `content` for existing records where it is empty but a text
 /// file exists on disk.  PDFs require OCR so they are skipped — their
 /// content will be populated on the next reprocessing.
-async fn backfill_content(db: &Database, root: &Path, username: &str) -> Result<()> {
+async fn backfill_content(
+    db: &Database,
+    root: &Path,
+    username: &str,
+    service_url: &str,
+) -> Result<()> {
     let snapshot = db.get_snapshot(Some(username)).await?;
+    let needs_backfill: Vec<_> = snapshot
+        .iter()
+        .filter(|r| r.content.is_empty())
+        .collect();
+
+    if needs_backfill.is_empty() {
+        return Ok(());
+    }
+
+    info!(
+        "[{}] Content backfill: {} records with empty content",
+        username,
+        needs_backfill.len()
+    );
+
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(120))
+        .build()?;
+    let extract_url = format!("{}/extract_text", service_url);
+
     let mut backfilled = 0u32;
+    let mut skipped = 0u32;
 
-    for record in &snapshot {
-        if !record.content.is_empty() {
-            continue;
-        }
-
+    for record in &needs_backfill {
         // Try current file first, then source file
         let file_path = record
             .current_file()
@@ -556,7 +578,10 @@ async fn backfill_content(db: &Database, root: &Path, username: &str) -> Result<
 
         let abs_path = match file_path {
             Some(p) if p.is_file() => p,
-            _ => continue,
+            _ => {
+                skipped += 1;
+                continue;
+            }
         };
 
         let ext = abs_path
@@ -565,31 +590,121 @@ async fn backfill_content(db: &Database, root: &Path, username: &str) -> Result<
             .unwrap_or("")
             .to_ascii_lowercase();
 
-        // Only backfill text-readable files
-        match ext.as_str() {
-            "txt" | "md" | "text" => {}
-            _ => continue,
+        // Skip audio/video files — their content comes from transcription,
+        // not text extraction.
+        let dot_ext = format!(".{}", ext);
+        if step3::AUDIO_EXTENSIONS.contains(&dot_ext.as_str()) {
+            continue;
         }
 
-        let text = match std::fs::read_to_string(&abs_path) {
-            Ok(t) if !t.trim().is_empty() => t,
-            _ => continue,
+        // Text files: read directly without calling the service.
+        if matches!(ext.as_str(), "txt" | "md" | "text") {
+            let text = match std::fs::read_to_string(&abs_path) {
+                Ok(t) if !t.trim().is_empty() => t,
+                _ => {
+                    skipped += 1;
+                    continue;
+                }
+            };
+            if let Err(e) = db.update_content(record.id, &text).await {
+                warn!(
+                    "[{}] Failed to update content for {}: {}",
+                    username, record.original_filename, e
+                );
+                skipped += 1;
+                continue;
+            }
+            backfilled += 1;
+            continue;
+        }
+
+        // Other document formats (PDF, DOCX, EML, etc.): call the service.
+        let file_bytes = match std::fs::read(&abs_path) {
+            Ok(b) if !b.is_empty() => b,
+            _ => {
+                skipped += 1;
+                continue;
+            }
         };
 
-        if let Err(e) = db.update_content(record.id, &text).await {
+        let fname = abs_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(&record.original_filename)
+            .to_string();
+
+        let mime = step3::get_content_type(&dot_ext);
+
+        let part = reqwest::multipart::Part::bytes(file_bytes)
+            .file_name(fname.clone())
+            .mime_str(mime)
+            .unwrap_or_else(|_| {
+                reqwest::multipart::Part::bytes(vec![])
+                    .file_name(fname.clone())
+            });
+
+        let form = reqwest::multipart::Form::new().part("file", part);
+
+        let response = match client.post(&extract_url).multipart(form).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(
+                    "[{}] extract_text request failed for {}: {}",
+                    username, record.original_filename, e
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
             warn!(
-                "[{}] Failed to backfill content for {}: {}",
+                "[{}] extract_text returned {} for {}: {}",
+                username, status, record.original_filename, body
+            );
+            skipped += 1;
+            continue;
+        }
+
+        let body: serde_json::Value = match response.json().await {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(
+                    "[{}] Failed to parse extract_text response for {}: {}",
+                    username, record.original_filename, e
+                );
+                skipped += 1;
+                continue;
+            }
+        };
+
+        let text = body
+            .get("text")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if text.trim().is_empty() {
+            skipped += 1;
+            continue;
+        }
+
+        if let Err(e) = db.update_content(record.id, text).await {
+            warn!(
+                "[{}] Failed to update content for {}: {}",
                 username, record.original_filename, e
             );
+            skipped += 1;
             continue;
         }
         backfilled += 1;
     }
 
-    if backfilled > 0 {
+    if backfilled > 0 || skipped > 0 {
         info!(
-            "[{}] Backfilled content for {} records",
-            username, backfilled
+            "[{}] Backfilled content for {} records ({} skipped)",
+            username, backfilled, skipped
         );
     }
     Ok(())
@@ -809,8 +924,8 @@ async fn run_watcher(
         _ => {}
     }
 
-    // Backfill empty content fields from text files on disk
-    if let Err(e) = backfill_content(&watcher.db, &watcher.root, &watcher.name).await {
+    // Backfill empty content fields via the extract_text service endpoint
+    if let Err(e) = backfill_content(&watcher.db, &watcher.root, &watcher.name, &watcher.service_url).await {
         error!(
             "[{}] Content text backfill failed: {}",
             watcher.name, e

@@ -502,6 +502,158 @@ async fn process_document(
     (StatusCode::OK, Json(response))
 }
 
+// =============================================================================
+// Text extraction only (no AI classification)
+// =============================================================================
+
+/// Extract text from a document without AI classification.
+///
+/// Accepts a multipart form with:
+///   - `file`: the document file
+///   - `language` (optional): OCR language hint (default: "eng")
+///
+/// Returns `{"text": "...", "filename": "..."}` with the extracted text.
+/// Supports the same file types as `/process`: PDF, EML, HTML, DOCX, RTF,
+/// TXT, MD, and images.
+async fn extract_text_handler(
+    State(state): State<Arc<AppState>>,
+    mut multipart: Multipart,
+) -> (StatusCode, Json<Value>) {
+    let mut file_bytes: Option<Vec<u8>> = None;
+    let mut filename = "document.pdf".to_string();
+    let mut language = "eng".to_string();
+
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or("").to_string();
+        match name.as_str() {
+            "file" => {
+                filename = field
+                    .file_name()
+                    .unwrap_or("document.pdf")
+                    .to_string();
+                match field.bytes().await {
+                    Ok(b) => file_bytes = Some(b.to_vec()),
+                    Err(e) => {
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            Json(json!({"error": format!("Failed to read file: {}", e)})),
+                        );
+                    }
+                }
+            }
+            "language" => {
+                if let Ok(b) = field.bytes().await {
+                    language = String::from_utf8_lossy(&b).to_string();
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let file_bytes = match file_bytes {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "No file provided"})),
+            );
+        }
+    };
+
+    let fl = filename.to_lowercase();
+    let is_pdf = fl.ends_with(".pdf");
+    let is_eml = fl.ends_with(".eml");
+    let is_html = fl.ends_with(".html") || fl.ends_with(".htm");
+    let is_docx = fl.ends_with(".docx");
+    let is_text = fl.ends_with(".txt") || fl.ends_with(".md");
+    let is_rtf = fl.ends_with(".rtf");
+    let is_image = image_convert::is_supported_image(&filename);
+
+    if !is_pdf && !is_eml && !is_html && !is_docx && !is_text && !is_rtf && !is_image {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error": "Unsupported file type"})),
+        );
+    }
+
+    // Plain text files: read directly
+    if is_text {
+        let text = match std::str::from_utf8(&file_bytes) {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                let (cow, _, _) = encoding_rs::WINDOWS_1252.decode(&file_bytes);
+                cow.to_string()
+            }
+        };
+        return (StatusCode::OK, Json(json!({"text": text, "filename": filename})));
+    }
+
+    // DOCX: extract text directly
+    if is_docx {
+        return match docx::extract_text_from_docx(&file_bytes) {
+            Ok(text) => (StatusCode::OK, Json(json!({"text": text, "filename": filename}))),
+            Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": format!("DOCX extraction failed: {}", e)}))),
+        };
+    }
+
+    // Everything else: convert to PDF if needed, then OCR
+    let (pdf_bytes, fname) = if is_eml {
+        match eml::eml_to_pdf(&file_bytes) {
+            Ok(pdf) => {
+                let new_name = filename[..filename.len() - 4].to_string() + ".pdf";
+                (pdf, new_name)
+            }
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("EML conversion failed: {}", e)})));
+            }
+        }
+    } else if is_html {
+        match html_convert::html_to_pdf(&file_bytes, &filename) {
+            Ok(pdf) => {
+                let stem = Path::new(&filename).file_stem().and_then(|s| s.to_str()).unwrap_or("document");
+                (pdf, format!("{}.pdf", stem))
+            }
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("HTML conversion failed: {}", e)})));
+            }
+        }
+    } else if is_rtf {
+        match rtf_convert::rtf_to_pdf(&file_bytes, &filename) {
+            Ok(pdf) => {
+                let stem = Path::new(&filename).file_stem().and_then(|s| s.to_str()).unwrap_or("document");
+                (pdf, format!("{}.pdf", stem))
+            }
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("RTF conversion failed: {}", e)})));
+            }
+        }
+    } else if is_image {
+        match image_convert::image_to_pdf(&file_bytes, &filename) {
+            Ok(pdf) => {
+                let stem = Path::new(&filename).file_stem().and_then(|s| s.to_str()).unwrap_or("image");
+                (pdf, format!("{}.pdf", stem))
+            }
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(json!({"error": format!("Image conversion failed: {}", e)})));
+            }
+        }
+    } else {
+        (file_bytes.clone(), filename.clone())
+    };
+
+    match state.ocr_client.process_pdf(&pdf_bytes, &fname, &language).await {
+        Ok(ocr_result) => {
+            (StatusCode::OK, Json(json!({"text": ocr_result.text, "filename": fname})))
+        }
+        Err(OcrError::UnprocessableInput(msg)) => {
+            (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("OCR rejected input: {}", msg)})))
+        }
+        Err(e) => {
+            (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("OCR failed: {}", e)})))
+        }
+    }
+}
+
 async fn process_text_file(
     state: &AppState,
     file_bytes: &[u8],
@@ -1156,6 +1308,7 @@ async fn main() {
     let app = Router::new()
         .route("/health", get(health))
         .route("/process", post(process_document))
+        .route("/extract_text", post(extract_text_handler))
         .route("/process_transcript", post(process_transcript_handler))
         .route("/classify_audio", post(classify_audio_handler))
         .route("/classify_transcript", post(classify_transcript_handler))

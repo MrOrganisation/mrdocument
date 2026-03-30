@@ -1522,6 +1522,7 @@ mod tests {
             fields,
             date: Some(NaiveDate::from_ymd_opt(2025, 8, 3).unwrap()),
             context: Some("privat".to_string()),
+            language: None,
             new_clues: HashMap::new(),
         };
 
@@ -1538,6 +1539,7 @@ mod tests {
             fields: HashMap::new(),
             date: Some(NaiveDate::from_ymd_opt(2025, 1, 15).unwrap()),
             context: Some("work".to_string()),
+            language: None,
             new_clues: HashMap::new(),
         };
 
@@ -1562,6 +1564,7 @@ mod tests {
             fields: HashMap::new(),
             date: Some(NaiveDate::from_ymd_opt(2025, 8, 3).unwrap()),
             context: Some("privat".to_string()),
+            language: None,
             new_clues: HashMap::new(),
         };
 
@@ -1579,6 +1582,7 @@ mod tests {
             fields: HashMap::new(),
             date: Some(NaiveDate::from_ymd_opt(2025, 1, 15).unwrap()),
             context: Some("work".to_string()),
+            language: None,
             new_clues: HashMap::new(),
         };
 
