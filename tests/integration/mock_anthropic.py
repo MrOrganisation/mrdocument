@@ -430,13 +430,21 @@ def mock_anthropic_messages():
                 "type": meta["type"],
                 "date": meta["date"],
                 "sender": meta["sender"],
+                "language": "de",
             }
         else:
             tool_input = {
                 "type": "Sonstiges",
                 "date": "2025-01-01",
                 "sender": "Unbekannt",
+                "language": "de",
             }
+    elif tool_name == "describe_document":
+        tool_input = {
+            "description": "Mock description of the document.",
+            "summary": "Mock summary of the document with more detail about its contents.",
+            "language": "de",
+        }
     else:
         # Fallback for unknown tools
         if meta:

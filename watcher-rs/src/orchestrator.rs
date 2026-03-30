@@ -215,6 +215,7 @@ impl DocumentWatcherV2 {
         name: Option<String>,
         context_manager: Option<SorterContextManager>,
         db_notify: Arc<tokio::sync::Notify>,
+        describe: bool,
     ) -> Self {
         let watcher_name = name.clone().unwrap_or_else(|| {
             root.file_name()
@@ -232,6 +233,7 @@ impl DocumentWatcherV2 {
             processor_timeout,
             contexts_for_api,
             context_manager.clone(),
+            describe,
         );
         let reconciler = FilesystemReconciler::new(root.clone());
 
@@ -404,6 +406,28 @@ impl DocumentWatcherV2 {
             .get("assigned_filename")
             .and_then(|v| v.as_str())
             .map(|s| s.to_string());
+        if let Some(desc) = sidecar.get("description").and_then(|v| v.as_str()) {
+            if !desc.is_empty() {
+                fresh.description = desc.to_string();
+            }
+        }
+        if let Some(summ) = sidecar.get("summary").and_then(|v| v.as_str()) {
+            if !summ.is_empty() {
+                fresh.summary = summ.to_string();
+            }
+        }
+        if fresh.language.is_empty() {
+            if let Some(lang) = sidecar.get("language").and_then(|v| v.as_str()) {
+                if !lang.is_empty() {
+                    fresh.language = lang.to_string();
+                }
+            }
+        }
+        if let Some(text) = sidecar.get("content").and_then(|v| v.as_str()) {
+            if !text.is_empty() {
+                fresh.content = text.to_string();
+            }
+        }
         fresh.hash = Some(file_hash);
         fresh.current_paths.push(PathEntry {
             path: format!(".output/{}", output_filename),

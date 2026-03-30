@@ -53,6 +53,7 @@ pub struct DocumentMetadata {
     pub fields: HashMap<String, Value>,
     pub date: Option<NaiveDate>,
     pub context: Option<String>,
+    pub language: Option<String>,
     pub new_clues: HashMap<String, (String, String)>,
 }
 
@@ -62,6 +63,7 @@ impl DocumentMetadata {
             fields,
             date,
             context,
+            language: None,
             new_clues: HashMap::new(),
         }
     }
@@ -496,7 +498,15 @@ impl AiClient {
             }),
         );
 
-        let mut required_fields = Vec::new();
+        properties.insert(
+            "language".to_string(),
+            json!({
+                "type": "string",
+                "description": "The ISO 639-1 language code of the document (e.g. 'de', 'en', 'fr').",
+            }),
+        );
+
+        let mut required_fields = vec![Value::String("language".to_string())];
 
         for (field_name, field_config) in field_configs {
             if field_name == "date" {
@@ -1226,12 +1236,165 @@ impl AiClient {
             field_summary.join(", ")
         );
 
+        let language = result
+            .get("language")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+
         DocumentMetadata {
             fields,
             date: doc_date,
             context: Some(context_name.to_string()),
+            language,
             new_clues,
         }
+    }
+
+    /// Generate a short description and a longer summary for a document.
+    ///
+    /// Uses a single API call with tool_use to obtain both fields.
+    /// Returns `(description, summary, language)`.  The description is
+    /// capped at 500 characters and the summary at 3000 characters.
+    /// Language is an ISO 639-1 code (e.g. "de", "en").
+    pub async fn generate_description_and_summary(
+        &self,
+        text: &str,
+        user_dir: Option<&Path>,
+    ) -> Result<(String, String, String), AiError> {
+        if text.len() < 10 {
+            return Ok((String::new(), String::new(), String::new()));
+        }
+
+        let truncated = &text[..text.len().min(self.config.extraction.max_input_chars)];
+        let model = &self.config.models[0];
+
+        let tool = json!({
+            "name": "describe_document",
+            "description": "Provide a brief description and a detailed summary of the document.",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "description": {
+                        "type": "string",
+                        "description": "A concise description of the document in under 500 characters."
+                    },
+                    "summary": {
+                        "type": "string",
+                        "description": "A detailed summary of the document in under 3000 characters."
+                    },
+                    "language": {
+                        "type": "string",
+                        "description": "The ISO 639-1 language code of the document (e.g. 'de', 'en', 'fr')."
+                    }
+                },
+                "required": ["description", "summary", "language"]
+            }
+        });
+
+        let max_tokens = if model.extended_thinking {
+            4096 + model.thinking_budget
+        } else {
+            4096
+        };
+
+        let mut params = json!({
+            "model": model.name,
+            "max_tokens": max_tokens,
+            "system": "You are a document summarization assistant. Analyze the provided document and generate a concise description and a detailed summary. Write in the same language as the document.",
+            "tools": [tool],
+            "tool_choice": {"type": "tool", "name": "describe_document"},
+            "messages": [{
+                "role": "user",
+                "content": format!("Describe and summarize this document:\n\n{}", truncated),
+            }],
+        });
+
+        if model.extended_thinking {
+            params["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": model.thinking_budget,
+            });
+            params["tool_choice"] = json!({"type": "auto"});
+        }
+
+        let result = if model.extended_thinking {
+            self.call_api_streaming(model, params).await
+        } else {
+            self.call_api(model, params).await
+        };
+
+        let response = match result {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Description/summary call failed: {}", e);
+                return Ok((String::new(), String::new(), String::new()));
+            }
+        };
+
+        // Track cost
+        if let Some(ud) = user_dir {
+            if let (Some(input_tokens), Some(output_tokens)) = (
+                response.get("usage").and_then(|u| u.get("input_tokens")).and_then(|v| v.as_u64()),
+                response.get("usage").and_then(|u| u.get("output_tokens")).and_then(|v| v.as_u64()),
+            ) {
+                get_cost_tracker().record_anthropic(
+                    &model.name,
+                    input_tokens,
+                    output_tokens,
+                    ud,
+                    true,
+                );
+            }
+        }
+
+        // Extract tool_use block
+        let content = response.get("content").and_then(|c| c.as_array());
+        let tool_input = content
+            .and_then(|blocks| {
+                blocks.iter().find(|b| {
+                    b.get("type").and_then(|t| t.as_str()) == Some("tool_use")
+                        && b.get("name").and_then(|n| n.as_str()) == Some("describe_document")
+                })
+            })
+            .and_then(|b| b.get("input"));
+
+        let (desc, summ, lang) = match tool_input {
+            Some(input) => {
+                let d = input
+                    .get("description")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let s = input
+                    .get("summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let l = input
+                    .get("language")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                (d.to_string(), s.to_string(), l.to_string())
+            }
+            None => {
+                warn!("No describe_document tool_use in response");
+                (String::new(), String::new(), String::new())
+            }
+        };
+
+        // Enforce character limits
+        let desc = if desc.len() > 500 {
+            desc[..500].to_string()
+        } else {
+            desc
+        };
+        let summ = if summ.len() > 3000 {
+            summ[..3000].to_string()
+        } else {
+            summ
+        };
+
+        info!("Generated description ({} chars), summary ({} chars), language={}", desc.len(), summ.len(), lang);
+        Ok((desc, summ, lang))
     }
 }
 

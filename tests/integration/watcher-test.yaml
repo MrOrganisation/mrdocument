@@ -5,3 +5,4 @@ timeout: 900
 max_concurrency: 4
 debounce_seconds: 1
 full_scan_seconds: 5
+describe: true

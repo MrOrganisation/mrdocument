@@ -102,8 +102,81 @@ BEGIN
     ) THEN
         ALTER TABLE mrdocument.documents_v2 ADD COLUMN tags JSONB NOT NULL DEFAULT '[]';
     END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'description'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN description TEXT NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'summary'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN summary TEXT NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'language'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN language TEXT NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'content'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN content TEXT NOT NULL DEFAULT '';
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'mrdocument' AND table_name = 'documents_v2'
+        AND column_name = 'content_tsv'
+    ) THEN
+        ALTER TABLE mrdocument.documents_v2 ADD COLUMN content_tsv TSVECTOR;
+    END IF;
 END
 $$;
+
+-- Full-text search: update tsvector from content using language-aware config.
+CREATE OR REPLACE FUNCTION mrdocument.update_content_tsv()
+RETURNS TRIGGER AS $$
+DECLARE
+    tsconfig regconfig;
+BEGIN
+    tsconfig := CASE NEW.language
+        WHEN 'de' THEN 'german'::regconfig
+        WHEN 'en' THEN 'english'::regconfig
+        WHEN 'fr' THEN 'french'::regconfig
+        WHEN 'es' THEN 'spanish'::regconfig
+        WHEN 'it' THEN 'italian'::regconfig
+        WHEN 'nl' THEN 'dutch'::regconfig
+        WHEN 'pt' THEN 'portuguese'::regconfig
+        ELSE 'simple'::regconfig
+    END;
+    NEW.content_tsv := to_tsvector(tsconfig, NEW.content);
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_trigger
+        WHERE tgname = 'documents_v2_content_tsv'
+    ) THEN
+        CREATE TRIGGER documents_v2_content_tsv
+            BEFORE INSERT OR UPDATE OF content, language
+            ON mrdocument.documents_v2
+            FOR EACH ROW EXECUTE FUNCTION mrdocument.update_content_tsv();
+    END IF;
+END
+$$;
+
+CREATE INDEX IF NOT EXISTS idx_docs_v2_content_tsv
+    ON mrdocument.documents_v2 USING gin(content_tsv);
 
 CREATE INDEX IF NOT EXISTS idx_docs_v2_source_hash
     ON mrdocument.documents_v2(source_hash);
@@ -359,6 +432,10 @@ impl Database {
                     .collect()
             })
             .unwrap_or_default();
+        let description: String = row.try_get("description").unwrap_or_default();
+        let summary: String = row.try_get("summary").unwrap_or_default();
+        let language: String = row.try_get("language").unwrap_or_default();
+        let content: String = row.try_get("content").unwrap_or_default();
         let assigned_filename: Option<String> = row.try_get("assigned_filename")?;
         let hash: Option<String> = row.try_get("hash")?;
         let content_hash: Option<String> = row.try_get("content_hash")?;
@@ -408,6 +485,10 @@ impl Database {
             context,
             metadata,
             tags,
+            description,
+            summary,
+            language,
+            content,
             assigned_filename,
             hash,
             content_hash,
@@ -462,7 +543,9 @@ impl Database {
                 id, original_filename, source_hash, source_content_hash,
                 source_paths, current_paths,
                 missing_source_paths, missing_current_paths,
-                context, metadata, tags, assigned_filename, hash, content_hash,
+                context, metadata, tags, description, summary,
+                language, content,
+                assigned_filename, hash, content_hash,
                 output_filename, state,
                 target_path, source_reference, current_reference,
                 duplicate_sources, deleted_paths,
@@ -471,11 +554,13 @@ impl Database {
                 $1, $2, $3, $4,
                 $5, $6,
                 $7, $8,
-                $9, $10, $11, $12, $13, $14,
-                $15, $16,
-                $17, $18, $19,
-                $20, $21,
-                $22, $23
+                $9, $10, $11, $12, $13,
+                $14, $15,
+                $16, $17, $18,
+                $19, $20,
+                $21, $22, $23,
+                $24, $25,
+                $26, $27
             )
             "#,
         )
@@ -490,6 +575,10 @@ impl Database {
         .bind(&record.context)
         .bind(&record.metadata)
         .bind(&tags_json)
+        .bind(&record.description)
+        .bind(&record.summary)
+        .bind(&record.language)
+        .bind(&record.content)
         .bind(&record.assigned_filename)
         .bind(&record.hash)
         .bind(&record.content_hash)
@@ -566,17 +655,21 @@ impl Database {
                 context = $9,
                 metadata = $10,
                 tags = $11,
-                assigned_filename = $12,
-                hash = $13,
-                content_hash = $14,
-                output_filename = $15,
-                state = $16,
-                target_path = $17,
-                source_reference = $18,
-                current_reference = $19,
-                duplicate_sources = $20,
-                deleted_paths = $21,
-                date_added = $22
+                description = $12,
+                summary = $13,
+                language = $14,
+                content = $15,
+                assigned_filename = $16,
+                hash = $17,
+                content_hash = $18,
+                output_filename = $19,
+                state = $20,
+                target_path = $21,
+                source_reference = $22,
+                current_reference = $23,
+                duplicate_sources = $24,
+                deleted_paths = $25,
+                date_added = $26
             WHERE id = $1
             "#,
         )
@@ -591,6 +684,10 @@ impl Database {
         .bind(&record.context)
         .bind(&record.metadata)
         .bind(&tags_json)
+        .bind(&record.description)
+        .bind(&record.summary)
+        .bind(&record.language)
+        .bind(&record.content)
         .bind(&record.assigned_filename)
         .bind(&record.hash)
         .bind(&record.content_hash)
@@ -607,6 +704,19 @@ impl Database {
         .context("Failed to save record")?;
 
         debug!("Saved record {}", record.id);
+        Ok(())
+    }
+
+    /// Update content text for a record (used by startup backfill).
+    pub async fn update_content(&self, record_id: Uuid, content: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE mrdocument.documents_v2 SET content = $2 WHERE id = $1",
+        )
+        .bind(record_id)
+        .bind(content)
+        .execute(&self.pool)
+        .await
+        .context("Failed to update content")?;
         Ok(())
     }
 

@@ -189,6 +189,7 @@ pub struct Processor {
     pub max_retries: u32,
     pub contexts: Option<Vec<serde_json::Value>>,
     pub context_manager: Option<SorterContextManager>,
+    pub describe: bool,
     client: reqwest::Client,
 }
 
@@ -202,6 +203,7 @@ impl Processor {
         _timeout: f64,
         contexts: Option<Vec<serde_json::Value>>,
         context_manager: Option<SorterContextManager>,
+        describe: bool,
     ) -> Self {
         let client = reqwest::Client::builder()
             .build()
@@ -215,6 +217,7 @@ impl Processor {
             max_retries: 3,
             contexts,
             context_manager,
+            describe,
             client,
         }
     }
@@ -315,13 +318,14 @@ impl Processor {
 
             // Extract response
             let metadata = result.get("metadata").cloned().unwrap_or(serde_json::json!({}));
-            let content_b64 = result.get("pdf").and_then(|v| v.as_str());
+            let content_b64 = result.get("pdf").and_then(|v| v.as_str())
+                .or_else(|| result.get("docx").and_then(|v| v.as_str()));
             let text_content = result.get("text").and_then(|v| v.as_str());
 
             let content_bytes = if let Some(b64) = content_b64 {
                 base64::engine::general_purpose::STANDARD
                     .decode(b64)
-                    .context("Failed to decode base64 PDF content")?
+                    .context("Failed to decode base64 content")?
             } else if let Some(text) = text_content {
                 text.as_bytes().to_vec()
             } else {
@@ -335,8 +339,8 @@ impl Processor {
                 .map(|s| s.to_string());
 
             if let Some(ref mut sf) = suggested_filename {
-                if text_content.is_some() {
-                    // Strip any existing extension before adding .txt
+                if content_b64.is_none() && text_content.is_some() {
+                    // Output is text-only (no PDF/DOCX binary) — ensure .txt extension
                     let stem = Path::new(sf.as_str())
                         .file_stem()
                         .and_then(|s| s.to_str())
@@ -357,10 +361,19 @@ impl Processor {
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             });
+            let description = result.get("description").and_then(|v| v.as_str()).unwrap_or("");
+            let summary = result.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+            let language = result.get("language").and_then(|v| v.as_str()).unwrap_or("");
+            let content_text = result.get("text").and_then(|v| v.as_str()).unwrap_or("");
+
             let sidecar = serde_json::json!({
                 "context": metadata.get("context"),
                 "metadata": metadata,
                 "assigned_filename": assigned_fn,
+                "description": description,
+                "summary": summary,
+                "language": language,
+                "content": content_text,
             });
             tokio::fs::write(&sidecar_path, serde_json::to_string(&sidecar)?)
                 .await?;
@@ -408,6 +421,7 @@ impl Processor {
         let root_str = self.root.to_string_lossy().to_string();
         let label_filename = filename_owned.clone();
         let locked_fields_json = locked_fields.map(|lf| lf.to_string());
+        let describe_flag = if self.describe { "true" } else { "false" }.to_string();
 
         let make_form = move || -> Result<multipart::Form> {
             let file_part = multipart::Part::bytes(file_bytes.clone())
@@ -417,7 +431,8 @@ impl Processor {
                 .part("file", file_part)
                 .text("type", file_type.clone())
                 .text("contexts", contexts_json.clone())
-                .text("user_dir", root_str.clone());
+                .text("user_dir", root_str.clone())
+                .text("describe", describe_flag.clone());
             if let Some(ref lf) = locked_fields_json {
                 form = form.text("locked_fields", lf.clone());
             }
@@ -1238,6 +1253,7 @@ diarization_speaker_count: 5
             5.0,
             None,
             None,
+            false,
         )
     }
 

@@ -392,6 +392,7 @@ async fn setup_user(
     processor_timeout: f64,
     stt_url: Option<&str>,
     max_concurrent: usize,
+    describe: bool,
 ) -> DocumentWatcherV2 {
     let username = get_username_from_root(user_root);
     ensure_directories(user_root);
@@ -465,6 +466,7 @@ async fn setup_user(
         Some(username),
         Some(context_manager),
         db_notify,
+        describe,
     );
     watcher.detector.set_smartfolder_paths(smartfolder_paths);
     watcher
@@ -524,6 +526,69 @@ async fn backfill_content_hashes(db: &Database, root: &Path, username: &str) -> 
     if backfilled > 0 {
         info!(
             "[{}] Backfilled content hashes for {} records",
+            username, backfilled
+        );
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Content text backfill
+// ---------------------------------------------------------------------------
+
+/// Backfill `content` for existing records where it is empty but a text
+/// file exists on disk.  PDFs require OCR so they are skipped — their
+/// content will be populated on the next reprocessing.
+async fn backfill_content(db: &Database, root: &Path, username: &str) -> Result<()> {
+    let snapshot = db.get_snapshot(Some(username)).await?;
+    let mut backfilled = 0u32;
+
+    for record in &snapshot {
+        if !record.content.is_empty() {
+            continue;
+        }
+
+        // Try current file first, then source file
+        let file_path = record
+            .current_file()
+            .map(|pe| root.join(&pe.path))
+            .or_else(|| record.source_file().map(|pe| root.join(&pe.path)));
+
+        let abs_path = match file_path {
+            Some(p) if p.is_file() => p,
+            _ => continue,
+        };
+
+        let ext = abs_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+
+        // Only backfill text-readable files
+        match ext.as_str() {
+            "txt" | "md" | "text" => {}
+            _ => continue,
+        }
+
+        let text = match std::fs::read_to_string(&abs_path) {
+            Ok(t) if !t.trim().is_empty() => t,
+            _ => continue,
+        };
+
+        if let Err(e) = db.update_content(record.id, &text).await {
+            warn!(
+                "[{}] Failed to backfill content for {}: {}",
+                username, record.original_filename, e
+            );
+            continue;
+        }
+        backfilled += 1;
+    }
+
+    if backfilled > 0 {
+        info!(
+            "[{}] Backfilled content for {} records",
             username, backfilled
         );
     }
@@ -744,6 +809,14 @@ async fn run_watcher(
         _ => {}
     }
 
+    // Backfill empty content fields from text files on disk
+    if let Err(e) = backfill_content(&watcher.db, &watcher.root, &watcher.name).await {
+        error!(
+            "[{}] Content text backfill failed: {}",
+            watcher.name, e
+        );
+    }
+
     // Deduplicate records that share the same content hash (post-migration)
     if let Err(e) = deduplicate_after_backfill(&watcher.db, &watcher.root, &watcher.name).await {
         error!(
@@ -931,6 +1004,7 @@ async fn main() -> Result<()> {
             processor_timeout,
             stt_url.as_deref(),
             max_concurrent,
+            watcher_config.describe,
         )
         .await;
         known_dirs.insert(user_root.clone());
@@ -949,6 +1023,7 @@ async fn main() -> Result<()> {
     let db_notifiers_arc = Arc::new(tokio::sync::Mutex::new(db_notifiers));
 
     let directus_discovery = directus.clone();
+    let describe_discovery = watcher_config.describe;
     let db_notifiers_discovery = db_notifiers_arc.clone();
     let discovery_handle = tokio::spawn({
         let known_dirs = known_dirs_arc.clone();
@@ -977,6 +1052,7 @@ async fn main() -> Result<()> {
                             processor_timeout,
                             stt_url_discovery.as_deref(),
                             max_concurrent,
+                            describe_discovery,
                         )
                         .await;
                         kd.insert(new_dir);

@@ -562,6 +562,7 @@ pub struct WatcherConfig {
     pub watch_patterns: Vec<String>,
     pub debounce_seconds: f64,
     pub full_scan_seconds: f64,
+    pub describe: bool,
 }
 
 impl Default for WatcherConfig {
@@ -570,6 +571,7 @@ impl Default for WatcherConfig {
             watch_patterns: vec!["/sync/*".into()],
             debounce_seconds: 15.0,
             full_scan_seconds: 300.0,
+            describe: false,
         }
     }
 }
@@ -597,11 +599,17 @@ impl WatcherConfig {
 
                     let debounce = yaml_f64(&data, "debounce_seconds").unwrap_or(15.0);
                     let full_scan = yaml_f64(&data, "full_scan_seconds").unwrap_or(300.0);
+                    let describe = data
+                        .as_mapping()
+                        .and_then(|m| m.get(&serde_yaml::Value::String("describe".into())))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
 
                     WatcherConfig {
                         watch_patterns: patterns,
                         debounce_seconds: debounce,
                         full_scan_seconds: full_scan,
+                        describe,
                     }
                 }
                 Err(e) => {

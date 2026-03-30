@@ -126,6 +126,22 @@ const FIELD_META = [
     options: { includeSeconds: true },
   } },
 
+  // Description, summary, language — AI-generated, readonly
+  { field: 'description',      meta: { sort: 13, width: 'full', hidden: false, readonly: true,
+    note: 'AI-generated short description of the document.',
+  } },
+  { field: 'summary',          meta: { sort: 14, width: 'full', hidden: false, readonly: true,
+    interface: 'input-multiline',
+    note: 'AI-generated detailed summary of the document.',
+  } },
+  { field: 'language',         meta: { sort: 14, width: 'half', hidden: false, readonly: true,
+    note: 'ISO 639-1 language code detected by AI (e.g. de, en).',
+  } },
+  { field: 'content',          meta: { sort: 23, width: 'full', hidden: true, readonly: true,
+    interface: 'input-multiline',
+    note: 'Full text content of the processed document.',
+  } },
+
   // Tags — user-editable list of strings
   { field: 'tags',              meta: { sort: 15, width: 'full', hidden: false,
     interface: 'tags', options: { iconRight: 'label' },

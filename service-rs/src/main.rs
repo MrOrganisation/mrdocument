@@ -149,6 +149,7 @@ async fn process_document(
     let mut contexts: Option<Vec<Value>> = None;
     let mut user_dir: Option<PathBuf> = None;
     let mut locked_fields: Option<HashMap<String, Value>> = None;
+    let mut describe = false;
 
     // Read multipart fields
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -213,6 +214,12 @@ async fn process_document(
                     }
                 }
             }
+            "describe" => {
+                if let Ok(b) = field.bytes().await {
+                    let s = String::from_utf8_lossy(&b).to_string();
+                    describe = s == "true" || s == "1";
+                }
+            }
             _ => {}
         }
     }
@@ -263,6 +270,7 @@ async fn process_document(
             &contexts,
             user_dir.as_deref(),
             locked_fields.as_ref(),
+            describe,
         )
         .await;
     }
@@ -277,6 +285,7 @@ async fn process_document(
             &contexts,
             user_dir.as_deref(),
             locked_fields.as_ref(),
+            describe,
         )
         .await;
     }
@@ -449,7 +458,11 @@ async fn process_document(
         "filename": suggested_filename,
         "pdf": base64::engine::general_purpose::STANDARD.encode(&pdf_with_metadata),
         "metadata": metadata_response,
+        "text": ocr_result.text,
     });
+    if let Some(ref lang) = metadata.language {
+        response["language"] = json!(lang);
+    }
 
     if !metadata.new_clues.is_empty() {
         let mut clues_obj = serde_json::Map::new();
@@ -466,6 +479,26 @@ async fn process_document(
         response["signature_invalidated"] = json!(true);
     }
 
+    // Optional: generate description, summary, and detect language
+    if describe {
+        match state
+            .ai_client
+            .generate_description_and_summary(&ocr_result.text, user_dir.as_deref())
+            .await
+        {
+            Ok((desc, summ, lang)) => {
+                response["description"] = json!(desc);
+                response["summary"] = json!(summ);
+                if response.get("language").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                    response["language"] = json!(lang);
+                }
+            }
+            Err(e) => {
+                warn!("Description/summary generation failed for {}: {}", fname, e);
+            }
+        }
+    }
+
     (StatusCode::OK, Json(response))
 }
 
@@ -477,6 +510,7 @@ async fn process_text_file(
     contexts: &[Value],
     user_dir: Option<&Path>,
     locked_fields: Option<&HashMap<String, Value>>,
+    describe: bool,
 ) -> (StatusCode, Json<Value>) {
     // Decode text
     let text = match std::str::from_utf8(file_bytes) {
@@ -533,8 +567,12 @@ async fn process_text_file(
 
     let mut response = json!({
         "filename": suggested_filename,
+        "text": text,
         "metadata": metadata_response,
     });
+    if let Some(ref lang) = metadata.language {
+        response["language"] = json!(lang);
+    }
 
     if !metadata.new_clues.is_empty() {
         let mut clues_obj = serde_json::Map::new();
@@ -542,6 +580,26 @@ async fn process_text_file(
             clues_obj.insert(field.clone(), json!({"value": value, "clue": clue}));
         }
         response["new_clues"] = Value::Object(clues_obj);
+    }
+
+    if describe {
+        match state
+            .ai_client
+            .generate_description_and_summary(&text, user_dir)
+            .await
+        {
+            Ok((desc, summ, lang)) => {
+                response["description"] = json!(desc);
+                response["summary"] = json!(summ);
+                // Only set language if not already set by classification
+                if response.get("language").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                    response["language"] = json!(lang);
+                }
+            }
+            Err(e) => {
+                warn!("Description/summary generation failed for {}: {}", filename, e);
+            }
+        }
     }
 
     (StatusCode::OK, Json(response))
@@ -555,6 +613,7 @@ async fn process_docx_file(
     contexts: &[Value],
     user_dir: Option<&Path>,
     locked_fields: Option<&HashMap<String, Value>>,
+    describe: bool,
 ) -> (StatusCode, Json<Value>) {
     let text = match docx::extract_text_from_docx(file_bytes) {
         Ok(t) => t,
@@ -619,8 +678,12 @@ async fn process_docx_file(
     let mut response = json!({
         "filename": suggested_filename,
         "docx": base64::engine::general_purpose::STANDARD.encode(&docx_with_metadata),
+        "text": text,
         "metadata": metadata_response,
     });
+    if let Some(ref lang) = metadata.language {
+        response["language"] = json!(lang);
+    }
 
     if !metadata.new_clues.is_empty() {
         let mut clues_obj = serde_json::Map::new();
@@ -628,6 +691,25 @@ async fn process_docx_file(
             clues_obj.insert(field.clone(), json!({"value": value, "clue": clue}));
         }
         response["new_clues"] = Value::Object(clues_obj);
+    }
+
+    if describe {
+        match state
+            .ai_client
+            .generate_description_and_summary(&text, user_dir)
+            .await
+        {
+            Ok((desc, summ, lang)) => {
+                response["description"] = json!(desc);
+                response["summary"] = json!(summ);
+                if response.get("language").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+                    response["language"] = json!(lang);
+                }
+            }
+            Err(e) => {
+                warn!("Description/summary generation failed for {}: {}", filename, e);
+            }
+        }
     }
 
     (StatusCode::OK, Json(response))
