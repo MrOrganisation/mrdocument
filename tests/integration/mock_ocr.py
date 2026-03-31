@@ -44,6 +44,17 @@ def mock_ocr():
             "details": "EncryptedPdfError",
         }), 422
 
+    # Validate PDF magic bytes — real OCR rejects non-PDF input
+    if not file_bytes.startswith(b"%PDF"):
+        return jsonify({
+            "error": (
+                f"OCR processing failed. Input file is not a PDF, "
+                f"checking if it is an image...\n"
+                f"cannot identify image file '/tmp/uploads/{filename}'\n"
+                f"UnsupportedImageFormatError\n"
+            ),
+        }), 500
+
     pdf_b64 = base64.b64encode(file_bytes).decode("utf-8")
     return jsonify({
         "pdf": pdf_b64,

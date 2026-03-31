@@ -652,11 +652,11 @@ async fn extract_text_handler(
         Ok(ocr_result) => {
             (StatusCode::OK, Json(json!({"text": ocr_result.text, "filename": fname})))
         }
-        Err(OcrError::UnprocessableInput(msg)) => {
+        Err(OcrError::UnprocessableInput(msg)) | Err(OcrError::Failed(msg)) => {
             (StatusCode::UNPROCESSABLE_ENTITY, Json(json!({"error": format!("OCR rejected input: {}", msg)})))
         }
-        Err(e) => {
-            (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("OCR failed: {}", e)})))
+        Err(OcrError::Request(e)) => {
+            (StatusCode::BAD_GATEWAY, Json(json!({"error": format!("OCR unavailable: {}", e)})))
         }
     }
 }

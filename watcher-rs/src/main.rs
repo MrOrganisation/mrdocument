@@ -650,7 +650,7 @@ async fn backfill_content(
             Err(e) => {
                 warn!(
                     "[{}] extract_text request failed for {}: {}",
-                    username, record.original_filename, e
+                    username, fname, e
                 );
                 skipped += 1;
                 continue;
@@ -662,7 +662,7 @@ async fn backfill_content(
             let body = response.text().await.unwrap_or_default();
             warn!(
                 "[{}] extract_text returned {} for {}: {}",
-                username, status, record.original_filename, body
+                username, status, fname, body
             );
             skipped += 1;
             continue;
@@ -673,7 +673,7 @@ async fn backfill_content(
             Err(e) => {
                 warn!(
                     "[{}] Failed to parse extract_text response for {}: {}",
-                    username, record.original_filename, e
+                    username, fname, e
                 );
                 skipped += 1;
                 continue;
@@ -693,7 +693,7 @@ async fn backfill_content(
         if let Err(e) = db.update_content(record.id, text).await {
             warn!(
                 "[{}] Failed to update content for {}: {}",
-                username, record.original_filename, e
+                username, fname, e
             );
             skipped += 1;
             continue;

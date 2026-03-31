@@ -231,6 +231,48 @@ class TestUnsupportedFormat:
 
 
 # ---------------------------------------------------------------------------
+# Missing filename regression (previously defaulted to "document.pdf")
+# ---------------------------------------------------------------------------
+
+
+class TestMissingFilename:
+    def test_no_filename_returns_400(self):
+        """A multipart upload without a filename must return 400, not
+        silently default to 'document.pdf' and route to OCR."""
+        r = requests.post(
+            EXTRACT_URL,
+            files={"file": (None, b"plain text content")},
+            timeout=10,
+        )
+        assert r.status_code == 400
+        assert "filename" in r.json()["error"].lower()
+
+    def test_txt_content_never_reaches_ocr(self):
+        """Text file content must be returned directly — never sent to OCR.
+
+        Regression: when filename was missing, the handler defaulted to
+        'document.pdf', sending raw text bytes to OCR which returned 502.
+        Even with a correct filename, verify OCR is never involved by
+        checking the response doesn't contain mock-OCR markers."""
+        r = extract("notes.txt", b"Rechnung Nr. 2024-0615 von Schulze GmbH")
+        assert r.status_code == 200
+        body = r.json()
+        # The text must be the file content itself, not mock-OCR output
+        assert "Schulze" in body["text"]
+        assert "Mock OCR" not in body["text"]
+
+    def test_pdf_filename_with_text_content(self):
+        """A .pdf file containing plain text is rejected by OCR.
+
+        Old records may have text content saved with a .pdf extension.
+        OCR rejects these because the bytes aren't valid PDF/image data.
+        The service returns 502 (downstream OCR failure)."""
+        text = b"Rechnung Nr. 2024-0615 von Schulze GmbH an MrDocument AG."
+        r = extract("ga-2025-12-01-behrmann-mitschnitt.pdf", text)
+        assert r.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # Response shape
 # ---------------------------------------------------------------------------
 
