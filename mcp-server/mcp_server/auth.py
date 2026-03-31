@@ -1,15 +1,23 @@
-"""Authentication: per-user credential discovery from sync directory password files.
+"""Authentication: per-user credential discovery and OAuth token management.
 
 Two password files per user:
-  - .mcp-password: used to authenticate incoming MCP Bearer tokens
+  - .mcp-password: used as OAuth client_secret for MCP authentication
   - .db-password:  PostgreSQL role password for RLS-isolated DB connections
 
 Both are created by the watcher's setup_user on startup.
+
+OAuth flow (client_credentials grant):
+  1. Client POSTs to /oauth/token with client_id (username) + client_secret (.mcp-password)
+  2. Server returns an opaque access_token
+  3. Client uses Bearer {access_token} on SSE connections
 """
 
 import base64
+import hashlib
 import logging
 import os
+import secrets
+import time
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -100,6 +108,43 @@ class UserCredentialStore:
     def known_users(self) -> set[str]:
         """Return the set of known usernames."""
         return set(self._mcp_passwords.keys())
+
+
+class TokenStore:
+    """Manages opaque OAuth access tokens.
+
+    Tokens map to usernames and expire after a configurable TTL.
+    """
+
+    def __init__(self, ttl_seconds: int = 3600) -> None:
+        self._ttl = ttl_seconds
+        # token -> (username, expiry_timestamp)
+        self._tokens: dict[str, tuple[str, float]] = {}
+
+    def issue(self, username: str) -> tuple[str, int]:
+        """Issue a new access token. Returns (token, expires_in_seconds)."""
+        token = secrets.token_urlsafe(48)
+        self._tokens[token] = (username, time.time() + self._ttl)
+        self._cleanup()
+        return token, self._ttl
+
+    def validate(self, token: str) -> str | None:
+        """Return the username for a valid token, or None if expired/unknown."""
+        entry = self._tokens.get(token)
+        if entry is None:
+            return None
+        username, expiry = entry
+        if time.time() > expiry:
+            del self._tokens[token]
+            return None
+        return username
+
+    def _cleanup(self) -> None:
+        """Remove expired tokens."""
+        now = time.time()
+        expired = [t for t, (_, exp) in self._tokens.items() if now > exp]
+        for t in expired:
+            del self._tokens[t]
 
 
 def decode_bearer_token(authorization: str) -> tuple[str, str]:

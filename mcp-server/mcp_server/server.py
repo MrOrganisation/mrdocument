@@ -21,7 +21,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
 
-from .auth import AuthError, UserCredentialStore, decode_bearer_token
+from .auth import AuthError, TokenStore, UserCredentialStore, decode_bearer_token
 from .contexts import ContextReadError, ContextReader
 from .db import DatabaseManager
 from .models import (
@@ -61,6 +61,7 @@ _current_user: contextvars.ContextVar[tuple[str, Any] | None] = contextvars.Cont
 # ---------------------------------------------------------------------------
 
 credential_store: UserCredentialStore | None = None
+token_store: TokenStore | None = None
 db_manager: DatabaseManager | None = None
 doc_tools: DocumentTools | None = None
 
@@ -204,11 +205,14 @@ async def _dispatch_tool(
 sse_transport = SseServerTransport("/messages/")
 
 
-async def handle_sse(request: Request):
-    """SSE connection endpoint.
+async def _authenticate(request: Request) -> tuple[str, Any] | JSONResponse:
+    """Authenticate from Authorization header.
 
-    Authenticates the user from the Authorization header, then runs
-    the MCP server for this connection with the user context set.
+    Supports two schemes:
+      - Bearer {oauth_token} — token from POST /oauth/token
+      - Bearer {base64(username:mcp_password)} — direct credentials
+
+    Returns (username, db_pool) on success or a JSONResponse error.
     """
     auth_header = request.headers.get("authorization", "")
     if not auth_header:
@@ -216,15 +220,27 @@ async def handle_sse(request: Request):
             {"error": "Missing Authorization header"}, status_code=401
         )
 
-    try:
-        username, password = decode_bearer_token(auth_header)
-    except AuthError as e:
-        return JSONResponse({"error": str(e)}, status_code=401)
-
-    if not credential_store.validate(username, password):
+    if not auth_header.startswith("Bearer "):
         return JSONResponse(
-            {"error": f"Invalid credentials for user '{username}'"}, status_code=401
+            {"error": "Authorization header must use Bearer scheme"}, status_code=401
         )
+
+    token = auth_header[len("Bearer "):]
+
+    # Try OAuth token first
+    username = token_store.validate(token)
+
+    if username is None:
+        # Fall back to base64(username:password) format
+        try:
+            username, password = decode_bearer_token(auth_header)
+        except AuthError as e:
+            return JSONResponse({"error": str(e)}, status_code=401)
+
+        if not credential_store.validate(username, password):
+            return JSONResponse(
+                {"error": f"Invalid credentials for user '{username}'"}, status_code=401
+            )
 
     db_password = credential_store.get_db_password(username)
     if db_password is None:
@@ -233,6 +249,19 @@ async def handle_sse(request: Request):
         )
 
     pool = await db_manager.get_pool(username, db_password)
+    return (username, pool)
+
+
+async def handle_sse(request: Request):
+    """SSE connection endpoint.
+
+    Authenticates the user from the Authorization header, then runs
+    the MCP server for this connection with the user context set.
+    """
+    result = await _authenticate(request)
+    if isinstance(result, JSONResponse):
+        return result
+    username, pool = result
 
     # Set the user context for all tool calls on this connection
     _current_user.set((username, pool))
@@ -252,6 +281,44 @@ async def handle_messages(request: Request):
     await sse_transport.handle_post_message(request.scope, request.receive, request._send)
 
 
+async def handle_oauth_token(request: Request):
+    """OAuth 2.0 token endpoint (client_credentials grant).
+
+    Expects form-encoded POST with:
+      - grant_type: "client_credentials"
+      - client_id: username
+      - client_secret: mcp-password
+    """
+    body = await request.form()
+    grant_type = body.get("grant_type", "")
+    client_id = body.get("client_id", "")
+    client_secret = body.get("client_secret", "")
+
+    if grant_type != "client_credentials":
+        return JSONResponse(
+            {"error": "unsupported_grant_type"}, status_code=400
+        )
+
+    if not client_id or not client_secret:
+        return JSONResponse(
+            {"error": "invalid_request", "error_description": "client_id and client_secret are required"},
+            status_code=400,
+        )
+
+    username = client_id.lower()
+    if not credential_store.validate(username, client_secret):
+        return JSONResponse(
+            {"error": "invalid_client"}, status_code=401
+        )
+
+    access_token, expires_in = token_store.issue(username)
+    return JSONResponse({
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": expires_in,
+    })
+
+
 async def handle_health(request: Request):
     """Health check endpoint."""
     return JSONResponse({"status": "healthy", "service": "mrdocument-mcp"})
@@ -264,9 +331,10 @@ async def handle_health(request: Request):
 @asynccontextmanager
 async def lifespan(app):
     """Initialize and tear down shared state."""
-    global credential_store, db_manager, doc_tools
+    global credential_store, token_store, db_manager, doc_tools
 
     credential_store = UserCredentialStore(SYNC_ROOT)
+    token_store = TokenStore()
     db_manager = DatabaseManager(DATABASE_HOST, DATABASE_PORT, DATABASE_NAME)
     context_reader = ContextReader(SYNC_ROOT)
     doc_tools = DocumentTools(db_manager, context_reader)
@@ -289,6 +357,7 @@ starlette_app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/health", handle_health),
+        Route("/oauth/token", handle_oauth_token, methods=["POST"]),
         Route("/sse", handle_sse),
         Route("/messages/", handle_messages, methods=["POST"]),
     ],
