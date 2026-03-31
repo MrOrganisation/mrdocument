@@ -520,17 +520,14 @@ async fn extract_text_handler(
     mut multipart: Multipart,
 ) -> (StatusCode, Json<Value>) {
     let mut file_bytes: Option<Vec<u8>> = None;
-    let mut filename = "document.pdf".to_string();
+    let mut filename: Option<String> = None;
     let mut language = "eng".to_string();
 
     while let Ok(Some(field)) = multipart.next_field().await {
         let name = field.name().unwrap_or("").to_string();
         match name.as_str() {
             "file" => {
-                filename = field
-                    .file_name()
-                    .unwrap_or("document.pdf")
-                    .to_string();
+                filename = field.file_name().map(|s| s.to_string());
                 match field.bytes().await {
                     Ok(b) => file_bytes = Some(b.to_vec()),
                     Err(e) => {
@@ -556,6 +553,16 @@ async fn extract_text_handler(
             return (
                 StatusCode::BAD_REQUEST,
                 Json(json!({"error": "No file provided"})),
+            );
+        }
+    };
+
+    let filename = match filename {
+        Some(f) if !f.is_empty() => f,
+        _ => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"error": "No filename provided — include a filename in the multipart Content-Disposition"})),
             );
         }
     };
