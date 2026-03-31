@@ -66,7 +66,10 @@ impl DirectusClient {
             }))
             .send()
             .await
-            .context("Directus login request failed")?;
+            .with_context(|| format!(
+                "Directus login: request to {}/auth/login failed",
+                self.url
+            ))?;
 
         if !resp.status().is_success() {
             let status = resp.status();
