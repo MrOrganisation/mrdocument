@@ -9,9 +9,10 @@ import pytest
 @pytest.fixture
 def tmp_sync_root(tmp_path):
     """Create a temporary sync root with user directories."""
-    # Create user directory with password file
+    # Create user directory with password files
     user_dir = tmp_path / "testuser"
     user_dir.mkdir()
+    (user_dir / ".mcp-password").write_text("test-mcp-password-456")
     (user_dir / ".db-password").write_text("test-password-123")
 
     # Create sorted directory with context configs

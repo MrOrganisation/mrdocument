@@ -266,20 +266,37 @@ impl DirectusClient {
         let body = self.api_get(&path).await?;
         let users = body["data"].as_array();
 
-        if let Some(users) = users {
-            if !users.is_empty() {
+        let password_file = user_root.join(".directus-password");
+        let password_exists = password_file.is_file();
+
+        let user_exists = users
+            .and_then(|u| if u.is_empty() { None } else { Some(u) });
+
+        if let Some(users) = user_exists {
+            if password_exists {
                 debug!("Directus user for '{}' already exists", username);
                 return Ok(());
             }
+
+            // User exists but password file is missing — reset password
+            let user_id = users[0]["id"]
+                .as_str()
+                .context("Directus user missing 'id' field")?;
+
+            let password = Self::generate_password();
+            let patch_path = format!("/users/{}", user_id);
+            self.api_patch(&patch_path, &json!({"password": password})).await?;
+            Self::write_password_file(&password_file, &password)?;
+
+            info!(
+                "Reset Directus password for '{}', written to {:?}",
+                username, password_file
+            );
+            return Ok(());
         }
 
-        // Generate password
-        let password = format!(
-            "{}{}",
-            Uuid::new_v4().to_string().replace('-', ""),
-            Uuid::new_v4().to_string().replace('-', ""),
-        );
-
+        // Create new user
+        let password = Self::generate_password();
         let email = format!("{}@users.mrdocument.parmenides.net", username);
 
         let payload = json!({
@@ -290,20 +307,29 @@ impl DirectusClient {
         });
 
         self.api_post("/users", &payload).await?;
-
-        // Write password to user root
-        let password_file = user_root.join(".directus-password");
-        if let Some(parent) = password_file.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(&password_file, &password)
-            .with_context(|| format!("Failed to write Directus password to {:?}", password_file))?;
+        Self::write_password_file(&password_file, &password)?;
 
         info!(
             "Created Directus user '{}' ({}), password written to {:?}",
             username, email, password_file
         );
         Ok(())
+    }
+
+    fn generate_password() -> String {
+        format!(
+            "{}{}",
+            Uuid::new_v4().to_string().replace('-', ""),
+            Uuid::new_v4().to_string().replace('-', ""),
+        )
+    }
+
+    fn write_password_file(path: &Path, password: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(path, password)
+            .with_context(|| format!("Failed to write Directus password to {:?}", path))
     }
 
     /// Update the `context` field dropdown choices on `documents_v2`.

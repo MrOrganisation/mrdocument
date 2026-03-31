@@ -209,7 +209,7 @@ export PUID ?= $(shell id -u)
 export PGID ?= $(shell id -g)
 
 INTEGRATION_COMPOSE := tests/integration/docker-compose.fast.yaml
-INTEGRATION_TESTS ?= test_stt.py test_documents.py test_audio.py test_lifecycle.py test_extract_text.py fixture_tests/
+INTEGRATION_TESTS ?= test_credentials.py test_stt.py test_documents.py test_audio.py test_lifecycle.py test_extract_text.py fixture_tests/
 
 SYNCTHING_COMPOSE := tests/integration/docker-compose.service-mock.yaml
 SYNCTHING_TESTS ?= test_stt.py test_migration.py test_documents.py test_audio.py

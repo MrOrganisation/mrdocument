@@ -326,7 +326,9 @@ impl Database {
         .await
         .context("Failed to check if role exists")?;
 
-        if exists {
+        let password_exists = password_file.is_file();
+
+        if exists && password_exists {
             debug!("PostgreSQL role '{}' already exists", username);
             return Ok(());
         }
@@ -337,6 +339,26 @@ impl Database {
             Uuid::new_v4().to_string().replace('-', ""),
             Uuid::new_v4().to_string().replace('-', ""),
         );
+
+        if exists {
+            // Role exists but password file is missing — reset password
+            let sql = format!(
+                "ALTER ROLE \"{}\" PASSWORD '{}'",
+                username,
+                password.replace('\'', "''"),
+            );
+            sqlx::raw_sql(&sql)
+                .execute(&self.pool)
+                .await
+                .with_context(|| format!("Failed to reset password for role '{}'", username))?;
+
+            Self::write_password_file(password_file, &password)?;
+            info!(
+                "Reset PostgreSQL password for '{}', written to {:?}",
+                username, password_file
+            );
+            return Ok(());
+        }
 
         // CREATE ROLE requires dynamic SQL (role names can't be parameterized)
         let sql = format!(
@@ -354,18 +376,20 @@ impl Database {
             .await
             .with_context(|| format!("Failed to create role '{}'", username))?;
 
-        // Write password file
-        if let Some(parent) = password_file.parent() {
-            std::fs::create_dir_all(parent).ok();
-        }
-        std::fs::write(password_file, &password)
-            .with_context(|| format!("Failed to write password to {:?}", password_file))?;
-
+        Self::write_password_file(password_file, &password)?;
         info!(
             "Created PostgreSQL role '{}', password written to {:?}",
             username, password_file
         );
         Ok(())
+    }
+
+    fn write_password_file(path: &std::path::Path, password: &str) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(path, password)
+            .with_context(|| format!("Failed to write password to {:?}", path))
     }
 
     /// Get a reference to the connection pool.

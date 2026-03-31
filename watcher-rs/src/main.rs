@@ -403,6 +403,21 @@ async fn setup_user(
         warn!("[{}] Failed to create DB role: {}", username, e);
     }
 
+    // Ensure an MCP password file exists for MCP server authentication
+    let mcp_password_file = user_root.join(".mcp-password");
+    if !mcp_password_file.is_file() {
+        let mcp_password = format!(
+            "{}{}",
+            uuid::Uuid::new_v4().to_string().replace('-', ""),
+            uuid::Uuid::new_v4().to_string().replace('-', ""),
+        );
+        if let Err(e) = std::fs::write(&mcp_password_file, &mcp_password) {
+            warn!("[{}] Failed to write MCP password: {}", username, e);
+        } else {
+            info!("[{}] MCP password written to {:?}", username, mcp_password_file);
+        }
+    }
+
     // Ensure a Directus user exists for this mrdocument user
     if let Some(ref directus) = directus {
         if let Err(e) = directus.ensure_user(&username, user_root).await {

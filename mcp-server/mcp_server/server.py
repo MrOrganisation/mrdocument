@@ -226,7 +226,13 @@ async def handle_sse(request: Request):
             {"error": f"Invalid credentials for user '{username}'"}, status_code=401
         )
 
-    pool = await db_manager.get_pool(username, password)
+    db_password = credential_store.get_db_password(username)
+    if db_password is None:
+        return JSONResponse(
+            {"error": f"No database credentials found for user '{username}'"}, status_code=503
+        )
+
+    pool = await db_manager.get_pool(username, db_password)
 
     # Set the user context for all tool calls on this connection
     _current_user.set((username, pool))
