@@ -280,7 +280,7 @@ impl DirectusClient {
             Uuid::new_v4().to_string().replace('-', ""),
         );
 
-        let email = format!("{}@mrdocument.local", username);
+        let email = format!("{}@users.mrdocument.parmenides.net", username);
 
         let payload = json!({
             "email": email,
