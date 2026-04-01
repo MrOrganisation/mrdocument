@@ -114,14 +114,14 @@ class TestSSESession:
         )
         assert r.status_code == 400
 
-    def test_sse_rejects_no_auth(self, client):
-        r = client.get("/sse")
+    def test_mcp_rejects_no_auth(self, client):
+        r = client.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
         assert r.status_code == 401
 
-    def test_sse_rejects_bad_token(self, client):
-        r = client.get("/sse", headers={"Authorization": "Bearer invalid"})
+    def test_mcp_rejects_bad_token(self, client):
+        r = client.post(
+            "/mcp",
+            headers={"Authorization": "Bearer invalid"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        )
         assert r.status_code == 401
-
-    # NOTE: SSE connection + MCP protocol flow cannot be tested with
-    # TestClient — the synchronous stream() blocks the event loop.
-    # See tests/integration/test_mcp_server.py for the full flow test.

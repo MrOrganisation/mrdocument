@@ -1,8 +1,9 @@
-"""Local MCP proxy: stdio <-> remote SSE.
+"""Local MCP proxy: stdio <-> remote Streamable HTTP.
 
 Runs locally on the client machine (which has VPN access).
 Claude Desktop/Code connects via stdio. The proxy forwards all
-MCP requests to the remote MCP server over SSE with OAuth authentication.
+MCP requests to the remote MCP server over Streamable HTTP with
+OAuth authentication.
 """
 
 import argparse
@@ -24,14 +25,16 @@ logger = logging.getLogger("mrdocument-proxy")
 
 
 class RemoteMCPClient:
-    """Connects to a remote MCP server via SSE and forwards requests."""
+    """Connects to a remote MCP server via Streamable HTTP."""
 
     def __init__(self, base_url: str, username: str, password: str, ca_cert: str | None = None) -> None:
         self._base_url = base_url.rstrip("/")
+        self._mcp_url = f"{self._base_url}/mcp"
         self._token_url = f"{self._base_url}/oauth/token"
         self._username = username
         self._password = password
         self._access_token: str | None = None
+        self._session_id: str | None = None
         self._verify = ca_cert if ca_cert else True
         self._client = httpx.AsyncClient(timeout=120, verify=self._verify)
 
@@ -52,95 +55,121 @@ class RemoteMCPClient:
         self._access_token = data["access_token"]
         return self._access_token
 
-    async def _auth_headers(self) -> dict[str, str]:
+    async def _headers(self) -> dict[str, str]:
         token = await self._ensure_token()
-        return {"Authorization": f"Bearer {token}"}
+        h = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream",
+        }
+        if self._session_id:
+            h["mcp-session-id"] = self._session_id
+        return h
 
-    async def _connect_and_call(self, method: str, params: dict, request_id: int = 2) -> dict:
-        """Open an SSE session, initialize, send one request, return its result."""
-        headers = await self._auth_headers()
+    async def _post_jsonrpc(self, payload: dict) -> dict:
+        """POST a JSON-RPC message to /mcp, return the parsed response."""
+        headers = await self._headers()
+        resp = await self._client.post(self._mcp_url, headers=headers, json=payload)
+        resp.raise_for_status()
 
-        async with httpx.AsyncClient(timeout=120, verify=self._verify) as client:
-            async with client.stream("GET", f"{self._base_url}/sse", headers=headers) as sse:
-                # Read endpoint URL from first SSE data line
-                messages_url = None
-                async for line in sse.aiter_lines():
-                    if line.startswith("data: ") and messages_url is None:
-                        endpoint = line[6:].strip()
-                        if endpoint.startswith("/"):
-                            messages_url = f"{self._base_url}{endpoint}"
-                        else:
-                            messages_url = endpoint
-                        break
+        # Capture session ID from response
+        sid = resp.headers.get("mcp-session-id")
+        if sid:
+            self._session_id = sid
 
-                if not messages_url:
-                    raise RuntimeError("No messages endpoint from SSE")
+        content_type = resp.headers.get("content-type", "")
+        if "text/event-stream" in content_type:
+            # Parse SSE response for the result
+            return self._parse_sse_response(resp.text, payload.get("id"))
+        else:
+            return resp.json()
 
-                # Initialize
-                await client.post(
-                    messages_url,
-                    headers=headers,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "initialize",
-                        "params": {
-                            "protocolVersion": "2024-11-05",
-                            "capabilities": {},
-                            "clientInfo": {"name": "mrdocument-proxy", "version": "0.1.0"},
-                        },
-                    },
-                )
-                async for line in sse.aiter_lines():
-                    if line.startswith("data: "):
-                        msg = json.loads(line[6:])
-                        if msg.get("id") == 1:
-                            break
+    async def _post_jsonrpc_streaming(self, payload: dict) -> dict:
+        """POST with streaming response for potentially long operations."""
+        headers = await self._headers()
+        async with self._client.stream("POST", self._mcp_url, headers=headers, json=payload) as resp:
+            resp.raise_for_status()
+            sid = resp.headers.get("mcp-session-id")
+            if sid:
+                self._session_id = sid
 
-                # Send initialized notification
-                await client.post(
-                    messages_url,
-                    headers=headers,
-                    json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-                )
+            content_type = resp.headers.get("content-type", "")
+            if "text/event-stream" in content_type:
+                text = ""
+                async for chunk in resp.aiter_text():
+                    text += chunk
+                return self._parse_sse_response(text, payload.get("id"))
+            else:
+                body = b""
+                async for chunk in resp.aiter_bytes():
+                    body += chunk
+                return json.loads(body)
 
-                # Send the actual request
-                await client.post(
-                    messages_url,
-                    headers=headers,
-                    json={
-                        "jsonrpc": "2.0",
-                        "id": request_id,
-                        "method": method,
-                        "params": params,
-                    },
-                )
-
-                # Read response
-                async for line in sse.aiter_lines():
-                    if line.startswith("data: "):
-                        msg = json.loads(line[6:])
-                        if msg.get("id") == request_id:
-                            return msg.get("result", {})
-
+    def _parse_sse_response(self, text: str, request_id: int | None) -> dict:
+        """Extract JSON-RPC response from SSE event stream."""
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    msg = json.loads(line[6:])
+                    if request_id is None or msg.get("id") == request_id:
+                        return msg
+                except json.JSONDecodeError:
+                    continue
         return {}
 
+    async def initialize(self) -> None:
+        """Initialize the MCP session."""
+        result = await self._post_jsonrpc({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "mrdocument-proxy", "version": "0.1.0"},
+            },
+        })
+        logger.debug("Initialize response: %s", result)
+
+        # Send initialized notification (no response expected)
+        headers = await self._headers()
+        await self._client.post(
+            self._mcp_url,
+            headers=headers,
+            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
+        )
+
     async def list_tools(self) -> list[Tool]:
-        result = await self._connect_and_call("tools/list", {})
+        if not self._session_id:
+            await self.initialize()
+
+        result = await self._post_jsonrpc({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {},
+        })
         return [
             Tool(
                 name=t["name"],
                 description=t.get("description", ""),
                 inputSchema=t.get("inputSchema", {}),
             )
-            for t in result.get("tools", [])
+            for t in result.get("result", {}).get("tools", [])
         ]
 
     async def call_tool(self, name: str, arguments: dict) -> str:
-        result = await self._connect_and_call(
-            "tools/call", {"name": name, "arguments": arguments}
-        )
-        content = result.get("content", [])
+        if not self._session_id:
+            await self.initialize()
+
+        result = await self._post_jsonrpc_streaming({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": arguments},
+        })
+        content = result.get("result", {}).get("content", [])
         texts = [c.get("text", "") for c in content if c.get("type") == "text"]
         return "\n".join(texts) if texts else json.dumps(result)
 

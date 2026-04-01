@@ -15,7 +15,7 @@ from typing import Any
 
 import uvicorn
 from mcp.server import Server
-from mcp.server.sse import SseServerTransport
+from mcp.server.streamable_http_manager import StreamableHTTPSessionManager
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse
@@ -200,10 +200,10 @@ async def _dispatch_tool(
 
 
 # ---------------------------------------------------------------------------
-# SSE transport with per-connection authentication
+# Streamable HTTP transport with per-request authentication
 # ---------------------------------------------------------------------------
 
-sse_transport = SseServerTransport("/messages/")
+session_manager: StreamableHTTPSessionManager | None = None
 
 
 async def _authenticate(request: Request) -> tuple[str, Any] | JSONResponse:
@@ -253,12 +253,12 @@ async def _authenticate(request: Request) -> tuple[str, Any] | JSONResponse:
     return (username, pool)
 
 
-async def handle_sse(scope, receive, send):
-    """SSE connection endpoint (raw ASGI).
+async def handle_mcp(scope, receive, send):
+    """Streamable HTTP MCP endpoint (raw ASGI).
 
-    The MCP SSE transport takes over the ASGI channel directly —
-    it cannot go through Starlette's Route which wraps handlers in
-    request_response() and expects a Response return value.
+    Authenticates the request, sets user context, then delegates to
+    the session manager which handles the MCP protocol over standard
+    HTTP POST/GET/DELETE requests — no long-lived SSE connection needed.
     """
     request = Request(scope, receive, send)
     result = await _authenticate(request)
@@ -268,18 +268,7 @@ async def handle_sse(scope, receive, send):
     username, pool = result
 
     _current_user.set((username, pool))
-
-    async with sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
-        await mcp_server.run(
-            read_stream,
-            write_stream,
-            mcp_server.create_initialization_options(),
-        )
-
-
-async def handle_messages(scope, receive, send):
-    """Message POST endpoint (raw ASGI)."""
-    await sse_transport.handle_post_message(scope, receive, send)
+    await session_manager.handle_request(scope, receive, send)
 
 
 async def handle_oauth_token(request: Request):
@@ -347,13 +336,14 @@ async def handle_health(request: Request):
 @asynccontextmanager
 async def lifespan(app):
     """Initialize and tear down shared state."""
-    global credential_store, token_store, db_manager, doc_tools
+    global credential_store, token_store, db_manager, doc_tools, session_manager
 
     credential_store = UserCredentialStore(SYNC_ROOT, subdir=MCP_SUBDIR)
     token_store = TokenStore()
     db_manager = DatabaseManager(DATABASE_HOST, DATABASE_PORT, DATABASE_NAME)
     context_reader = ContextReader(SYNC_ROOT, subdir=MCP_SUBDIR)
     doc_tools = DocumentTools(db_manager, context_reader)
+    session_manager = StreamableHTTPSessionManager(mcp_server)
 
     await db_manager.start()
     logger.info(
@@ -362,7 +352,8 @@ async def lifespan(app):
         ", ".join(sorted(credential_store.known_users)) or "none",
     )
 
-    yield
+    async with session_manager.run():
+        yield
 
     await db_manager.close()
     logger.info("MCP server stopped")
@@ -382,16 +373,14 @@ _inner_app = Starlette(
 async def starlette_app(scope, receive, send):
     """Top-level ASGI app.
 
-    Routes /sse and /messages/ directly as raw ASGI handlers (the MCP
-    SSE transport manages its own HTTP lifecycle). Everything else goes
+    Routes /mcp directly as a raw ASGI handler (the Streamable HTTP
+    transport manages its own HTTP lifecycle). Everything else goes
     through Starlette's routing.
     """
     if scope["type"] == "http":
         path = scope.get("path", "")
-        if path == "/sse":
-            return await handle_sse(scope, receive, send)
-        if path.startswith("/messages/"):
-            return await handle_messages(scope, receive, send)
+        if path == "/mcp":
+            return await handle_mcp(scope, receive, send)
     await _inner_app(scope, receive, send)
 
 
