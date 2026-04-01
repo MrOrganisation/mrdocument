@@ -59,11 +59,15 @@ class UserCredentialStore:
             if not entry.is_dir():
                 continue
             username = entry.name.lower()
+            # Password files live in {user}/mrdocument/ (the watcher's user root)
+            user_dir = entry / "mrdocument"
+            if not user_dir.is_dir():
+                continue
             for filename, target in [
                 (MCP_PASSWORD_FILENAME, new_mcp),
                 (DB_PASSWORD_FILENAME, new_db),
             ]:
-                pw_file = entry / filename
+                pw_file = user_dir / filename
                 if pw_file.is_file():
                     try:
                         password = pw_file.read_text().strip()
@@ -101,8 +105,8 @@ class UserCredentialStore:
         return pw
 
     def get_username_dir(self, username: str) -> Path:
-        """Return the sync directory path for a user."""
-        return self._sync_root / username
+        """Return the watcher user root (sync_root/{user}/mrdocument)."""
+        return self._sync_root / username / "mrdocument"
 
     @property
     def known_users(self) -> set[str]:

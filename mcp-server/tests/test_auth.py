@@ -86,8 +86,8 @@ class TestUserCredentialStore:
         assert "newuser" not in store.known_users
 
         # Add a new user with both password files
-        new_dir = tmp_sync_root / "newuser"
-        new_dir.mkdir()
+        new_dir = tmp_sync_root / "newuser" / "mrdocument"
+        new_dir.mkdir(parents=True)
         (new_dir / ".mcp-password").write_text("new-mcp-pw")
         (new_dir / ".db-password").write_text("new-db-pw")
 
@@ -100,8 +100,8 @@ class TestUserCredentialStore:
         store = UserCredentialStore(str(tmp_sync_root))
 
         # Add user after initial load
-        new_dir = tmp_sync_root / "lateuser"
-        new_dir.mkdir()
+        new_dir = tmp_sync_root / "lateuser" / "mrdocument"
+        new_dir.mkdir(parents=True)
         (new_dir / ".mcp-password").write_text("late-mcp-pw")
         (new_dir / ".db-password").write_text("late-db-pw")
 
@@ -114,4 +114,4 @@ class TestUserCredentialStore:
 
     def test_get_username_dir(self, tmp_sync_root):
         store = UserCredentialStore(str(tmp_sync_root))
-        assert store.get_username_dir("testuser") == tmp_sync_root / "testuser"
+        assert store.get_username_dir("testuser") == tmp_sync_root / "testuser" / "mrdocument"

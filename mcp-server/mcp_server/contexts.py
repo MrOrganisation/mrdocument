@@ -24,7 +24,7 @@ class ContextReader:
         self._sync_root = Path(sync_root)
 
     def _sorted_dir(self, username: str) -> Path:
-        return self._sync_root / username / "sorted"
+        return self._sync_root / username / "mrdocument" / "sorted"
 
     def list_contexts(self, username: str) -> list[dict]:
         """Enumerate all contexts available to the user.

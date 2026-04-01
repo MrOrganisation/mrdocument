@@ -19,6 +19,8 @@ async def test():
         sys.exit(1)
 
     pw = open(pw_file).read().strip()
+    print(f"Password file: {pw_file} ({len(pw)} chars, starts with {pw[:6]}...)")
+
     verify = _resolve_ca_cert(os.environ.get("MRDOCUMENT_CA_CERT"))
     if verify:
         print(f"Using CA bundle: {verify}")
@@ -36,6 +38,7 @@ async def test():
             return
 
         try:
+            print(f"OAuth:  POST {url}/oauth/token client_id={user}")
             r = await c.post(
                 f"{url}/oauth/token",
                 data={
