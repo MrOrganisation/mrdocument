@@ -44,6 +44,7 @@ DATABASE_HOST = os.environ.get("DATABASE_HOST", "mrdocument-db")
 DATABASE_PORT = int(os.environ.get("DATABASE_PORT", "5432"))
 DATABASE_NAME = os.environ.get("DATABASE_NAME", "mrdocument")
 SYNC_ROOT = os.environ.get("SYNC_ROOT", "/sync")
+MCP_SUBDIR = os.environ.get("MCP_SUBDIR", "mrdocument")
 MCP_PORT = int(os.environ.get("MCP_PORT", "8091"))
 LOG_LEVEL = os.environ.get("LOG_LEVEL", "INFO").upper()
 
@@ -252,11 +253,17 @@ async def _authenticate(request: Request) -> tuple[str, Any] | JSONResponse:
     return (username, pool)
 
 
+class _AsgiResponse:
+    """No-op response for handlers that already wrote to the ASGI send channel."""
+    async def __call__(self, scope, receive, send):
+        pass
+
+
 async def handle_sse(request: Request):
     """SSE connection endpoint.
 
-    Authenticates the user from the Authorization header, then runs
-    the MCP server for this connection with the user context set.
+    The SSE transport writes directly to the ASGI channel. We return a
+    no-op response so Starlette's Route doesn't crash on None.
     """
     result = await _authenticate(request)
     if isinstance(result, JSONResponse):
@@ -275,10 +282,15 @@ async def handle_sse(request: Request):
             mcp_server.create_initialization_options(),
         )
 
+    return _AsgiResponse()
+
 
 async def handle_messages(request: Request):
     """Message POST endpoint for the SSE transport."""
-    await sse_transport.handle_post_message(request.scope, request.receive, request._send)
+    await sse_transport.handle_post_message(
+        request.scope, request.receive, request._send
+    )
+    return _AsgiResponse()
 
 
 async def handle_oauth_token(request: Request):
@@ -348,10 +360,10 @@ async def lifespan(app):
     """Initialize and tear down shared state."""
     global credential_store, token_store, db_manager, doc_tools
 
-    credential_store = UserCredentialStore(SYNC_ROOT)
+    credential_store = UserCredentialStore(SYNC_ROOT, subdir=MCP_SUBDIR)
     token_store = TokenStore()
     db_manager = DatabaseManager(DATABASE_HOST, DATABASE_PORT, DATABASE_NAME)
-    context_reader = ContextReader(SYNC_ROOT)
+    context_reader = ContextReader(SYNC_ROOT, subdir=MCP_SUBDIR)
     doc_tools = DocumentTools(db_manager, context_reader)
 
     await db_manager.start()

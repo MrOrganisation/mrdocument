@@ -41,8 +41,9 @@ class UserCredentialStore:
     uses the .db-password internally to connect to PostgreSQL with RLS.
     """
 
-    def __init__(self, sync_root: str) -> None:
+    def __init__(self, sync_root: str, subdir: str = "mrdocument") -> None:
         self._sync_root = Path(sync_root)
+        self._subdir = subdir
         self._mcp_passwords: dict[str, str] = {}  # username -> mcp password
         self._db_passwords: dict[str, str] = {}   # username -> db password
         self.refresh()
@@ -59,8 +60,8 @@ class UserCredentialStore:
             if not entry.is_dir():
                 continue
             username = entry.name.lower()
-            # Password files live in {user}/mrdocument/ (the watcher's user root)
-            user_dir = entry / "mrdocument"
+            # Password files live in {user}/{subdir}/ (the watcher's user root)
+            user_dir = entry / self._subdir if self._subdir else entry
             if not user_dir.is_dir():
                 continue
             for filename, target in [
@@ -105,8 +106,10 @@ class UserCredentialStore:
         return pw
 
     def get_username_dir(self, username: str) -> Path:
-        """Return the watcher user root (sync_root/{user}/mrdocument)."""
-        return self._sync_root / username / "mrdocument"
+        """Return the watcher user root."""
+        if self._subdir:
+            return self._sync_root / username / self._subdir
+        return self._sync_root / username
 
     @property
     def known_users(self) -> set[str]:

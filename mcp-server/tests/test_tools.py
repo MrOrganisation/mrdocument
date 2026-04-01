@@ -17,7 +17,7 @@ def mock_db():
 
 @pytest.fixture
 def tools(mock_db, tmp_sync_root):
-    reader = ContextReader(str(tmp_sync_root))
+    reader = ContextReader(str(tmp_sync_root), subdir="")
     return DocumentTools(mock_db, reader)
 
 

@@ -51,43 +51,43 @@ class TestDecodeBearer:
 
 class TestUserCredentialStore:
     def test_discovers_users_with_mcp_password(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert "testuser" in store.known_users
         # otheruser has no .mcp-password file
         assert "otheruser" not in store.known_users
 
     def test_validate_correct_mcp_password(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert store.validate("testuser", "test-mcp-password-456") is True
 
     def test_validate_db_password_rejected(self, tmp_sync_root):
         """DB password must not work for MCP auth."""
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert store.validate("testuser", "test-password-123") is False
 
     def test_validate_wrong_password(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert store.validate("testuser", "wrong-password") is False
 
     def test_validate_unknown_user(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert store.validate("unknown", "password") is False
 
     def test_get_db_password(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert store.get_db_password("testuser") == "test-password-123"
 
     def test_get_db_password_unknown_user(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert store.get_db_password("unknown") is None
 
     def test_refresh_picks_up_new_user(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
         assert "newuser" not in store.known_users
 
         # Add a new user with both password files
-        new_dir = tmp_sync_root / "newuser" / "mrdocument"
-        new_dir.mkdir(parents=True)
+        new_dir = tmp_sync_root / "newuser"
+        new_dir.mkdir()
         (new_dir / ".mcp-password").write_text("new-mcp-pw")
         (new_dir / ".db-password").write_text("new-db-pw")
 
@@ -97,11 +97,11 @@ class TestUserCredentialStore:
         assert store.get_db_password("newuser") == "new-db-pw"
 
     def test_validate_triggers_refresh_on_miss(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
 
         # Add user after initial load
-        new_dir = tmp_sync_root / "lateuser" / "mrdocument"
-        new_dir.mkdir(parents=True)
+        new_dir = tmp_sync_root / "lateuser"
+        new_dir.mkdir()
         (new_dir / ".mcp-password").write_text("late-mcp-pw")
         (new_dir / ".db-password").write_text("late-db-pw")
 
@@ -113,5 +113,5 @@ class TestUserCredentialStore:
         assert store.known_users == set()
 
     def test_get_username_dir(self, tmp_sync_root):
-        store = UserCredentialStore(str(tmp_sync_root))
-        assert store.get_username_dir("testuser") == tmp_sync_root / "testuser" / "mrdocument"
+        store = UserCredentialStore(str(tmp_sync_root), subdir="")
+        assert store.get_username_dir("testuser") == tmp_sync_root / "testuser"

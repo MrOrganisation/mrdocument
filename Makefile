@@ -209,7 +209,7 @@ export PUID ?= $(shell id -u)
 export PGID ?= $(shell id -g)
 
 INTEGRATION_COMPOSE := tests/integration/docker-compose.fast.yaml
-INTEGRATION_TESTS ?= test_credentials.py test_stt.py test_documents.py test_audio.py test_lifecycle.py test_extract_text.py fixture_tests/
+INTEGRATION_TESTS ?= test_credentials.py test_mcp_server.py test_stt.py test_documents.py test_audio.py test_lifecycle.py test_extract_text.py fixture_tests/
 
 SYNCTHING_COMPOSE := tests/integration/docker-compose.service-mock.yaml
 SYNCTHING_TESTS ?= test_stt.py test_migration.py test_documents.py test_audio.py
@@ -247,8 +247,9 @@ test-integration:
 	docker compose -f $(INTEGRATION_COMPOSE) build --builder default
 	@echo "Starting containers..."
 	docker compose -f $(INTEGRATION_COMPOSE) up -d --force-recreate
-	@echo "Waiting for service to become healthy..."
+	@echo "Waiting for services to become healthy..."
 	@curl --retry 12 --retry-delay 5 --retry-all-errors -sf http://localhost:8000/health > /dev/null
+	@curl --retry 12 --retry-delay 5 --retry-all-errors -sf http://localhost:8091/health > /dev/null
 	@echo "Running integration tests..."
 	cd tests/integration && bash -c 'set -o pipefail && poetry run pytest $(INTEGRATION_TESTS) -v --timeout=300 2>&1 | tee logs/test-run.log' ; \
 	EXIT_CODE=$$? ; \

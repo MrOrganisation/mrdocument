@@ -20,11 +20,14 @@ class ContextReadError(Exception):
 class ContextReader:
     """Reads context configuration from a user's sorted/ directory."""
 
-    def __init__(self, sync_root: str) -> None:
+    def __init__(self, sync_root: str, subdir: str = "mrdocument") -> None:
         self._sync_root = Path(sync_root)
+        self._subdir = subdir
 
     def _sorted_dir(self, username: str) -> Path:
-        return self._sync_root / username / "mrdocument" / "sorted"
+        if self._subdir:
+            return self._sync_root / username / self._subdir / "sorted"
+        return self._sync_root / username / "sorted"
 
     def list_contexts(self, username: str) -> list[dict]:
         """Enumerate all contexts available to the user.

@@ -105,6 +105,34 @@ services:
       mock-ocr:
         condition: service_healthy
 
+  mcp-server:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.mcp-server
+    networks:
+      - mrdocument-test-net
+    environment:
+      DATABASE_HOST: mrdocument-db
+      DATABASE_PORT: 5432
+      DATABASE_NAME: mrdocument
+      SYNC_ROOT: /sync
+      MCP_PORT: 8091
+      MCP_SUBDIR: ""
+      LOG_LEVEL: DEBUG
+    volumes:
+      - ./testdata:/sync/testuser
+    ports:
+      - "127.0.0.1:8091:8091"
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8091/health"]
+      start_period: 10s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    depends_on:
+      mrdocument-db:
+        condition: service_healthy
+
   mrdocument-watcher:
     build:
       context: ../..

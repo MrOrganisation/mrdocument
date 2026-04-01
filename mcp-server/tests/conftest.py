@@ -10,8 +10,7 @@ import pytest
 def tmp_sync_root(tmp_path):
     """Create a temporary sync root with user directories."""
     # Create user directory with password files
-    # Layout: {sync_root}/{user}/mrdocument/.mcp-password
-    user_dir = tmp_path / "testuser" / "mrdocument"
+    user_dir = tmp_path / "testuser"
     user_dir.mkdir(parents=True)
     (user_dir / ".mcp-password").write_text("test-mcp-password-456")
     (user_dir / ".db-password").write_text("test-password-123")
@@ -88,7 +87,7 @@ folders:
     )
 
     # Create a second user (no password file — should be skipped by auth)
-    other_user = tmp_path / "otheruser" / "mrdocument"
+    other_user = tmp_path / "otheruser"
     other_user.mkdir(parents=True)
 
     return tmp_path

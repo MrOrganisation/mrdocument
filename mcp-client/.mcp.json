@@ -1,11 +1,13 @@
 {
   "mcpServers": {
     "mrdocument": {
-      "command": "mrdocument-proxy",
+      "command": "poetry",
       "args": [
+        "run", "mrdocument-proxy",
         "--url", "${MRDOCUMENT_URL:-https://mcp.mrdocument.parmenides.net}",
         "--user", "${MRDOCUMENT_USER}",
-        "--password-file", "${MRDOCUMENT_PASSWORD_FILE}"
+        "--password-file", "${MRDOCUMENT_PASSWORD_FILE}",
+        "--verbose"
       ]
     }
   }
