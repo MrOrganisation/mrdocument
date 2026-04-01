@@ -253,44 +253,33 @@ async def _authenticate(request: Request) -> tuple[str, Any] | JSONResponse:
     return (username, pool)
 
 
-class _AsgiResponse:
-    """No-op response for handlers that already wrote to the ASGI send channel."""
-    async def __call__(self, scope, receive, send):
-        pass
+async def handle_sse(scope, receive, send):
+    """SSE connection endpoint (raw ASGI).
 
-
-async def handle_sse(request: Request):
-    """SSE connection endpoint.
-
-    The SSE transport writes directly to the ASGI channel. We return a
-    no-op response so Starlette's Route doesn't crash on None.
+    The MCP SSE transport takes over the ASGI channel directly —
+    it cannot go through Starlette's Route which wraps handlers in
+    request_response() and expects a Response return value.
     """
+    request = Request(scope, receive, send)
     result = await _authenticate(request)
     if isinstance(result, JSONResponse):
-        return result
+        await result(scope, receive, send)
+        return
     username, pool = result
 
-    # Set the user context for all tool calls on this connection
     _current_user.set((username, pool))
 
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as (read_stream, write_stream):
+    async with sse_transport.connect_sse(scope, receive, send) as (read_stream, write_stream):
         await mcp_server.run(
             read_stream,
             write_stream,
             mcp_server.create_initialization_options(),
         )
 
-    return _AsgiResponse()
 
-
-async def handle_messages(request: Request):
-    """Message POST endpoint for the SSE transport."""
-    await sse_transport.handle_post_message(
-        request.scope, request.receive, request._send
-    )
-    return _AsgiResponse()
+async def handle_messages(scope, receive, send):
+    """Message POST endpoint (raw ASGI)."""
+    await sse_transport.handle_post_message(scope, receive, send)
 
 
 async def handle_oauth_token(request: Request):
@@ -379,17 +368,31 @@ async def lifespan(app):
     logger.info("MCP server stopped")
 
 
-starlette_app = Starlette(
+_inner_app = Starlette(
     debug=False,
     lifespan=lifespan,
     routes=[
         Route("/health", handle_health),
         Route("/.well-known/oauth-authorization-server", handle_oauth_metadata),
         Route("/oauth/token", handle_oauth_token, methods=["POST"]),
-        Route("/sse", handle_sse),
-        Route("/messages/", handle_messages, methods=["POST"]),
     ],
 )
+
+
+async def starlette_app(scope, receive, send):
+    """Top-level ASGI app.
+
+    Routes /sse and /messages/ directly as raw ASGI handlers (the MCP
+    SSE transport manages its own HTTP lifecycle). Everything else goes
+    through Starlette's routing.
+    """
+    if scope["type"] == "http":
+        path = scope.get("path", "")
+        if path == "/sse":
+            return await handle_sse(scope, receive, send)
+        if path.startswith("/messages/"):
+            return await handle_messages(scope, receive, send)
+    await _inner_app(scope, receive, send)
 
 
 # ---------------------------------------------------------------------------
