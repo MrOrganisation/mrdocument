@@ -1,0 +1,19 @@
+[tool.poetry]
+name = "mrdocument-client"
+version = "0.1.0"
+description = "MrDocument MCP client — local proxy and skills for Claude Desktop/Code"
+authors = ["Developer"]
+packages = [{include = "mrdocument_client"}]
+
+[tool.poetry.dependencies]
+python = ">=3.10,<4"
+mcp = {version = ">=1.9.0,<2.0.0", extras = ["cli"]}
+httpx = ">=0.27.0,<1.0.0"
+
+[tool.poetry.scripts]
+mrdocument-proxy = "mrdocument_client.proxy:main"
+mrdocument-setup = "mrdocument_client.setup:main"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

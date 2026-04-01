@@ -319,6 +319,21 @@ async def handle_oauth_token(request: Request):
     })
 
 
+async def handle_oauth_metadata(request: Request):
+    """OAuth 2.0 Authorization Server Metadata (RFC 8414).
+
+    Claude Desktop discovers the token endpoint from this.
+    """
+    base_url = os.environ.get("MCP_PUBLIC_URL", f"http://localhost:{MCP_PORT}")
+    return JSONResponse({
+        "issuer": base_url,
+        "token_endpoint": f"{base_url}/oauth/token",
+        "grant_types_supported": ["client_credentials"],
+        "token_endpoint_auth_methods_supported": ["client_secret_post"],
+        "response_types_supported": [],
+    })
+
+
 async def handle_health(request: Request):
     """Health check endpoint."""
     return JSONResponse({"status": "healthy", "service": "mrdocument-mcp"})
@@ -357,6 +372,7 @@ starlette_app = Starlette(
     lifespan=lifespan,
     routes=[
         Route("/health", handle_health),
+        Route("/.well-known/oauth-authorization-server", handle_oauth_metadata),
         Route("/oauth/token", handle_oauth_token, methods=["POST"]),
         Route("/sse", handle_sse),
         Route("/messages/", handle_messages, methods=["POST"]),
