@@ -1,7 +1,10 @@
-.PHONY: install setup test-connection
+.PHONY: install setup test-connection run
 
 install:
 	poetry install
+
+run: install
+	poetry run claude --append-system-prompt-file system-prompt.txt
 
 setup: install
 	@echo ""
@@ -12,7 +15,7 @@ setup: install
 	@echo "  export MRDOCUMENT_USER=your_username"
 	@echo "  export MRDOCUMENT_PASSWORD_FILE=/path/to/.mcp-password"
 	@echo ""
-	@echo "Then run 'claude' from this directory."
+	@echo "Then run 'make run' from this directory."
 	@echo ""
 
 test-connection:
