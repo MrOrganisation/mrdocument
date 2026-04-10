@@ -12,8 +12,8 @@ import asyncpg
 
 logger = logging.getLogger(__name__)
 
-# Idle pool timeout in seconds (30 minutes)
-IDLE_POOL_TIMEOUT = 30 * 60
+# Idle pool timeout in seconds (4 hours — long enough to cover a full session)
+IDLE_POOL_TIMEOUT = 4 * 60 * 60
 
 
 class DatabaseManager:
@@ -79,7 +79,7 @@ class DatabaseManager:
             user=username,
             password=password,
             min_size=1,
-            max_size=3,
+            max_size=10,
             command_timeout=30,
         )
         self._pools[username] = pool
@@ -92,9 +92,28 @@ class DatabaseManager:
         self, pool: asyncpg.Pool, sql: str, params: list[Any]
     ) -> list[dict]:
         """Execute a parameterized query and return results as JSON-safe dicts."""
-        async with pool.acquire() as conn:
-            rows = await conn.fetch(sql, *params)
-            return [_row_to_dict(row) for row in rows]
+        try:
+            async with pool.acquire(timeout=15) as conn:
+                rows = await conn.fetch(sql, *params)
+                return [_row_to_dict(row) for row in rows]
+        except asyncpg.exceptions.InterfaceError as e:
+            if "pool is closed" in str(e).lower():
+                # Pool was closed by cleanup — find the user and recreate
+                username = None
+                for u, p in self._pools.items():
+                    if p is pool:
+                        username = u
+                        break
+                if username:
+                    password = self._pool_passwords.get(username)
+                    if password:
+                        logger.warning("Pool closed for %s, recreating", username)
+                        self._pools.pop(username, None)
+                        new_pool = await self.get_pool(username, password)
+                        async with new_pool.acquire(timeout=15) as conn:
+                            rows = await conn.fetch(sql, *params)
+                            return [_row_to_dict(row) for row in rows]
+            raise
 
     async def _cleanup_idle_pools(self) -> None:
         """Periodically close connection pools that have been idle too long."""
