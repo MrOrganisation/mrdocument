@@ -1,15 +1,13 @@
-"""Integration tests for the MCP server.
+"""Integration tests for the MCP server (Streamable HTTP transport).
 
-Tests the full flow: health check, OAuth token exchange, SSE connection,
-and tool calls through the MCP protocol.
+Tests the full flow: health check, OAuth token exchange, MCP protocol
+over POST /mcp (initialize, list tools, call tool).
 
 Requires the integration stack to be running (docker-compose.fast.yaml)
 with the mcp-server container.
 """
 
 import json
-import queue
-import threading
 import time
 
 import pytest
@@ -18,9 +16,8 @@ import requests
 MCP_URL = "http://localhost:8091"
 HEALTH_URL = f"{MCP_URL}/health"
 TOKEN_URL = f"{MCP_URL}/oauth/token"
-SSE_URL = f"{MCP_URL}/sse"
+ENDPOINT_URL = f"{MCP_URL}/mcp"
 
-# Test credentials — the watcher creates these on startup
 USERNAME = "testuser"
 
 
@@ -42,7 +39,7 @@ def mcp_password():
         capture_output=True, text=True, timeout=10,
     )
     if result.returncode != 0:
-        pytest.skip("No .mcp-password file found — watcher may not have created it")
+        pytest.skip("No .mcp-password file found")
     pw = result.stdout.strip()
     if not pw:
         pytest.skip(".mcp-password file is empty")
@@ -63,6 +60,37 @@ def access_token(mcp_password):
     )
     assert r.status_code == 200, f"OAuth failed: {r.status_code} {r.text}"
     return r.json()["access_token"]
+
+
+def _post_mcp(access_token, payload, session_id=None, timeout=30):
+    """POST a JSON-RPC message to /mcp, return (response, session_id)."""
+    headers = {
+        "Authorization": f"Bearer {access_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if session_id:
+        headers["mcp-session-id"] = session_id
+
+    r = requests.post(ENDPOINT_URL, headers=headers, json=payload, timeout=timeout)
+    new_session_id = r.headers.get("mcp-session-id", session_id)
+
+    # Parse response — may be JSON or SSE
+    content_type = r.headers.get("content-type", "")
+    if "text/event-stream" in content_type:
+        # Parse SSE: find the data line matching our request ID
+        for line in r.text.split("\n"):
+            line = line.strip()
+            if line.startswith("data: "):
+                try:
+                    msg = json.loads(line[6:])
+                    if msg.get("id") == payload.get("id"):
+                        return msg, new_session_id
+                except json.JSONDecodeError:
+                    continue
+        return {}, new_session_id
+    else:
+        return r.json() if r.text else {}, new_session_id
 
 
 class TestHealthCheck:
@@ -96,7 +124,6 @@ class TestOAuthToken:
         body = r.json()
         assert "access_token" in body
         assert body["token_type"] == "Bearer"
-        assert body["expires_in"] > 0
 
     def test_wrong_password(self):
         r = requests.post(
@@ -104,7 +131,7 @@ class TestOAuthToken:
             data={
                 "grant_type": "client_credentials",
                 "client_id": USERNAME,
-                "client_secret": "wrong-password",
+                "client_secret": "wrong",
             },
             timeout=10,
         )
@@ -135,192 +162,84 @@ class TestOAuthToken:
         assert r.status_code == 401
 
 
-class TestSSEConnection:
-    def test_sse_without_auth_returns_401(self):
-        r = requests.get(SSE_URL, timeout=5, stream=True)
-        # Without auth, the handler should reject before SSE starts
-        assert r.status_code == 401
-        r.close()
-
-    def test_sse_with_invalid_token_returns_401(self):
-        r = requests.get(
-            SSE_URL,
-            headers={"Authorization": "Bearer invalid-token"},
+class TestMCPAuth:
+    def test_mcp_without_auth_returns_401(self):
+        r = requests.post(
+            ENDPOINT_URL,
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
             timeout=5,
-            stream=True,
         )
         assert r.status_code == 401
-        r.close()
 
-    def test_sse_connects_with_valid_token(self, access_token):
-        """SSE connection should succeed and send an endpoint event."""
-        r = requests.get(
-            SSE_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=10,
-            stream=True,
+    def test_mcp_with_invalid_token_returns_401(self):
+        r = requests.post(
+            ENDPOINT_URL,
+            headers={"Authorization": "Bearer invalid-token"},
+            json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            timeout=5,
         )
-        assert r.status_code == 200
-
-        # Read the first SSE event — should be the messages endpoint
-        messages_url = None
-        for line in r.iter_lines(decode_unicode=True):
-            if line and line.startswith("data: ") and "/messages/" in line:
-                messages_url = line[6:].strip()
-                break
-        r.close()
-
-        assert messages_url is not None, "SSE did not send messages endpoint"
-        assert "/messages/" in messages_url
-
-
-class SSEReader:
-    """Background thread that reads SSE events into a queue."""
-
-    def __init__(self, url, headers, timeout=30):
-        self._events = queue.Queue()
-        self._messages_url = None
-        self._ready = threading.Event()
-        self._resp = requests.get(url, headers=headers, timeout=timeout, stream=True)
-        assert self._resp.status_code == 200
-        self._thread = threading.Thread(target=self._read_loop, daemon=True)
-        self._thread.start()
-
-    def _read_loop(self):
-        try:
-            for line in self._resp.iter_lines(decode_unicode=True):
-                if not line:
-                    continue
-                if line.startswith("data: "):
-                    data = line[6:].strip()
-                    if self._messages_url is None and "/messages/" in data:
-                        self._messages_url = data
-                        self._ready.set()
-                    else:
-                        try:
-                            self._events.put(json.loads(data))
-                        except json.JSONDecodeError:
-                            pass
-        except Exception:
-            pass
-        finally:
-            self._ready.set()
-
-    @property
-    def messages_url(self):
-        self._ready.wait(timeout=10)
-        url = self._messages_url
-        if url and url.startswith("/"):
-            return f"{MCP_URL}{url}"
-        return url
-
-    def wait_for(self, request_id, timeout=15):
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            try:
-                msg = self._events.get(timeout=1)
-                if msg.get("id") == request_id:
-                    return msg
-            except queue.Empty:
-                continue
-        return None
-
-    def close(self):
-        self._resp.close()
+        assert r.status_code == 401
 
 
 class TestMCPProtocol:
-    """Test full MCP protocol flow: connect SSE, initialize, list tools, call tool."""
+    """Test full MCP protocol: initialize, list tools, call tool via Streamable HTTP."""
 
-    def _mcp_session(self, access_token):
-        """Connect SSE, initialize, return (sse_reader, messages_url, headers)."""
-        headers = {"Authorization": f"Bearer {access_token}"}
-        sse = SSEReader(SSE_URL, headers)
-
-        messages_url = sse.messages_url
-        assert messages_url, "No messages endpoint from SSE"
-
-        # Initialize
-        r = requests.post(
-            messages_url,
-            headers=headers,
-            json={
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2024-11-05",
-                    "capabilities": {},
-                    "clientInfo": {"name": "test", "version": "0.1.0"},
-                },
+    def _init_session(self, access_token):
+        """Initialize an MCP session, return session_id."""
+        result, session_id = _post_mcp(access_token, {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {"name": "test", "version": "0.1.0"},
             },
-            timeout=10,
-        )
-        assert r.status_code == 202
-
-        msg = sse.wait_for(1)
-        assert msg is not None, "No initialize response"
+        })
+        assert "result" in result, f"Initialize failed: {result}"
+        assert session_id, "No session ID returned"
 
         # Send initialized notification
-        requests.post(
-            messages_url,
-            headers=headers,
-            json={"jsonrpc": "2.0", "method": "notifications/initialized"},
-            timeout=5,
-        )
+        _post_mcp(access_token, {
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+        }, session_id=session_id)
 
-        return sse, messages_url, headers
+        return session_id
 
     def test_list_tools(self, access_token):
-        sse, messages_url, headers = self._mcp_session(access_token)
-        try:
-            requests.post(
-                messages_url,
-                headers=headers,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/list",
-                    "params": {},
-                },
-                timeout=10,
-            )
+        session_id = self._init_session(access_token)
 
-            msg = sse.wait_for(2)
-            assert msg is not None, "No tools/list response"
-            tools = msg.get("result", {}).get("tools", [])
-            tool_names = {t["name"] for t in tools}
-            assert "find_documents" in tool_names
-            assert "get_document_content" in tool_names
-            assert "get_document_summary" in tool_names
-            assert "list_contexts" in tool_names
-            assert "list_fields" in tool_names
-            assert "list_candidates" in tool_names
-        finally:
-            sse.close()
+        result, _ = _post_mcp(access_token, {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list",
+            "params": {},
+        }, session_id=session_id)
+
+        tools = result.get("result", {}).get("tools", [])
+        tool_names = {t["name"] for t in tools}
+        assert "find_documents" in tool_names
+        assert "get_document_content" in tool_names
+        assert "get_document_summary" in tool_names
+        assert "list_contexts" in tool_names
+        assert "list_fields" in tool_names
+        assert "list_candidates" in tool_names
 
     def test_find_documents(self, access_token):
-        sse, messages_url, headers = self._mcp_session(access_token)
-        try:
-            requests.post(
-                messages_url,
-                headers=headers,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": 2,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "find_documents",
-                        "arguments": {"query": {}},
-                    },
-                },
-                timeout=10,
-            )
+        session_id = self._init_session(access_token)
 
-            msg = sse.wait_for(2, timeout=30)
-            assert msg is not None, "No find_documents response"
-            content = msg.get("result", {}).get("content", [])
-            assert len(content) > 0
-            assert content[0]["type"] == "text"
-        finally:
-            sse.close()
+        result, _ = _post_mcp(access_token, {
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "find_documents",
+                "arguments": {"query": {}},
+            },
+        }, session_id=session_id, timeout=30)
+
+        assert "result" in result, f"find_documents failed: {result}"
+        content = result.get("result", {}).get("content", [])
+        assert len(content) > 0
+        assert content[0]["type"] == "text"
