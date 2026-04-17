@@ -203,20 +203,26 @@ def create_proxy_server(remote: RemoteMCPClient) -> Server:
     return server
 
 
-def _resolve_ca_cert(ca_cert: str | None) -> str | None:
-    """Resolve the CA certificate path.
+LINUX_CA_BUNDLE_PATHS = (
+    "/etc/ssl/certs/ca-certificates.crt",  # Debian, Ubuntu
+    "/etc/pki/tls/certs/ca-bundle.crt",    # RHEL, Fedora
+    "/etc/ssl/ca-bundle.pem",              # openSUSE
+    "/etc/pki/tls/cacert.pem",             # OpenELEC
+    "/etc/ssl/cert.pem",                   # Alpine, FreeBSD
+)
 
-    If ca_cert is given, use it directly.
-    On macOS, exports all certificates from the Keychain (system roots +
-    System + user login) into a temp PEM bundle so that httpx trusts
-    both public CAs and any self-signed CA the user has marked as trusted.
-    """
-    if ca_cert:
-        return ca_cert
 
-    if platform.system() != "Darwin":
-        return None
+def _resolve_ca_cert_linux() -> str | None:
+    env_cert = os.environ.get("SSL_CERT_FILE")
+    if env_cert and os.path.isfile(env_cert):
+        return env_cert
+    for path in LINUX_CA_BUNDLE_PATHS:
+        if os.path.isfile(path):
+            return path
+    return None
 
+
+def _resolve_ca_cert_macos() -> str | None:
     import tempfile
 
     keychains = [
@@ -245,6 +251,14 @@ def _resolve_ca_cert(ca_cert: str | None) -> str | None:
         f.write(all_certs)
     logger.debug("Exported macOS Keychain certs to %s", ca_file)
     return ca_file
+
+
+def _resolve_ca_cert(ca_cert: str | None) -> str | None:
+    if ca_cert:
+        return ca_cert
+    if platform.system() == "Darwin":
+        return _resolve_ca_cert_macos()
+    return _resolve_ca_cert_linux()
 
 
 async def run(url: str, username: str, password: str, ca_cert: str | None = None) -> None:
